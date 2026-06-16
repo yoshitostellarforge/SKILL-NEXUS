@@ -4,7 +4,7 @@
 // This is a minimal shell. Replace with a full Workbox strategy
 // (e.g. via @vite-pwa/sveltekit) for production use.
 
-const CACHE_NAME = 'tactical-cross-v1';
+const CACHE_NAME = 'tactical-cross-v2';
 
 // Assets to pre-cache on install
 const PRECACHE_ASSETS = [
