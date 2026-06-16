@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { socketManager } from '$lib/socket';
-  import { createInitialGame, placeStone, useSkill } from '$lib/gameLogic';
+  import { createInitialGame, placeStone, useSkill, serializeBoard } from '$lib/gameLogic';
   import { skills } from '$lib/skills';
   import { decideBestAction, type AgentGene } from '$lib/evaluator';
   import type { SkillModule } from '$lib/types';
@@ -20,6 +20,7 @@
   let aiGene = $state<AgentGene | null>(null);
   let aiThinking = $state(false);
   let isLocalhost = $state(false);
+  let openingBookData = $state<any>(null);
 
   // Firebase Auth & Firestore state
   let firebaseUser = $state<any>(null);
@@ -243,6 +244,7 @@
     });
 
     socket.on('game:action:received', (payload: any) => {
+      recordMove(payload);
       if (payload.actionType === 'placeStone') {
         state = placeStone(state, payload.x, payload.y);
       } else if (payload.actionType === 'useSkill') {
@@ -464,12 +466,20 @@
     socketManager.getSocket()?.emit('joinQueue', { matchType: 'ranked', playerName: myPlayerName, playerId: myPlayerId });
   }
 
+  function recordMove(action: any) {
+    state.moves.push({
+      boardBefore: serializeBoard(state.board),
+      player: state.currentPlayer,
+      action
+    });
+  }
+
   function checkRankedMatchEnd() {
-    if (isOnlineMatch && state.winner && currentRoomCode && isRankedMatch) {
+    if (isOnlineMatch && state.winner && currentRoomCode) {
       if (state.winner === myRole) {
-        socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: myRole });
+        socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: myRole, moves: state.moves });
       } else if (state.winner === 'draw' && myRole === 'A') {
-        socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: 'draw' });
+        socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: 'draw', moves: state.moves });
       }
     }
   }
@@ -637,6 +647,18 @@
       };
     }
 
+    // Fetch opening book
+    try {
+      const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
+      const res = await fetch(`${serverUrl}/api/opening-book`);
+      if (res.ok) {
+        openingBookData = await res.json();
+      }
+    } catch (e) {
+      console.warn("Failed to fetch opening book. Fallback to evaluation only.", e);
+      openingBookData = null;
+    }
+
     currentScreen = 'localSkillSelect';
   }
 
@@ -653,9 +675,10 @@
     }
 
     try {
-      const decision = decideBestAction(state, 'B', aiGene!);
+      const decision = decideBestAction(state, 'B', aiGene!, openingBookData);
       
       if (decision.actionType === 'placeStone') {
+        recordMove({ actionType: 'placeStone', x: decision.x, y: decision.y });
         state = placeStone(state, decision.x!, decision.y!);
       } else if (decision.actionType === 'useSkill') {
         let customPayload: any = undefined;
@@ -664,6 +687,7 @@
           const tempOrder = Array.from({ length: 9 }, (_, i) => i).sort(() => Math.random() - 0.5);
           customPayload = { result, shuffleOrder: tempOrder };
         }
+        recordMove({ actionType: 'useSkill', skillId: decision.skillId, x: decision.x, y: decision.y, customPayload });
         state = useSkill(state, decision.skillId!, { x: decision.x, y: decision.y }, customPayload);
       }
     } catch (e) {
@@ -676,6 +700,7 @@
       }
       if (emptyCells.length > 0) {
         const target = emptyCells[Math.floor(Math.random() * emptyCells.length)];
+        recordMove({ actionType: 'placeStone', x: target.x, y: target.y });
         state = placeStone(state, target.x, target.y);
       }
     } finally {
@@ -789,8 +814,11 @@
           alert('対象のセルには駒がありません！');
           return;
         }
+        const boardBeforeStr = serializeBoard(state.board);
+        const action = { actionType: 'useSkill' as const, skillId: selectedSkillId, x, y };
+        recordMove(action);
         state = useSkill(state, selectedSkillId, { x, y });
-        if (isOnlineMatch) socketManager.getSocket()?.emit('game:action', { actionType: 'useSkill', skillId: selectedSkillId, x, y });
+        if (isOnlineMatch) socketManager.getSocket()?.emit('game:action', { ...action, boardBefore: boardBeforeStr });
       }
       
       selectedSkillId = null;
@@ -798,8 +826,11 @@
     } else {
       // Normal stone placement (switching player and ending turn)
       if (state.board[y][x].type !== 'empty') return;
+      const boardBeforeStr = serializeBoard(state.board);
+      const action = { actionType: 'placeStone' as const, x, y };
+      recordMove(action);
       state = placeStone(state, x, y);
-      if (isOnlineMatch) socketManager.getSocket()?.emit('game:action', { actionType: 'placeStone', x, y });
+      if (isOnlineMatch) socketManager.getSocket()?.emit('game:action', { ...action, boardBefore: boardBeforeStr });
       isSkillsDrawerOpen = false;
     }
     checkRankedMatchEnd();
@@ -829,12 +860,14 @@
         customPayload = { result, shuffleOrder: tempOrder };
       }
 
+      const boardBeforeStr = serializeBoard(state.board);
+      const action = { actionType: 'useSkill' as const, skillId: skill.id, customPayload };
+      recordMove(action);
       state = useSkill(state, skill.id, undefined, customPayload);
       if (isOnlineMatch) {
         socketManager.getSocket()?.emit('game:action', { 
-          actionType: 'useSkill', 
-          skillId: skill.id, 
-          customPayload 
+          ...action, 
+          boardBefore: boardBeforeStr 
         });
       }
       selectedSkillId = null;

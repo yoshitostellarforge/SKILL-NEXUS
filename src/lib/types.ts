@@ -6,6 +6,18 @@ export interface Cell {
 
 export type Board = Cell[][];
 
+export interface GameMove {
+  boardBefore: string;
+  player: 'A' | 'B';
+  action: {
+    actionType: 'placeStone' | 'useSkill';
+    x?: number;
+    y?: number;
+    skillId?: string;
+    customPayload?: any;
+  };
+}
+
 export interface GameState {
   board: Board;
   currentPlayer: 'A' | 'B';
@@ -19,6 +31,7 @@ export interface GameState {
     A: string[];
     B: string[];
   };
+  moves: GameMove[];
   // Temporary coordinates for swap selection source
   swapSource?: { x: number; y: number } | null;
   // Dice roll values for shuffle randomized outcomes

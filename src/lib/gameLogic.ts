@@ -22,7 +22,8 @@ export function createInitialGame(): GameState {
     selectedSkills: {
       A: [],
       B: []
-    }
+    },
+    moves: []
   };
 }
 
@@ -170,3 +171,13 @@ export function useSkill(
 
   return nextState;
 }
+
+export function serializeBoard(board: Board): string {
+  return board.map(row => 
+    row.map(cell => {
+      const char = cell.type === 'circle' ? 'O' : (cell.type === 'cross' ? 'X' : '.');
+      return `${char}${cell.hp}`;
+    }).join(',')
+  ).join('|');
+}
+

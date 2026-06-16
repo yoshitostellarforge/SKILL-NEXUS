@@ -1,5 +1,5 @@
 import type { GameState, Board, Cell } from './types';
-import { placeStone, useSkill } from './gameLogic';
+import { placeStone, useSkill, serializeBoard } from './gameLogic';
 import { skills } from './skills';
 
 export interface AgentGene {
@@ -101,10 +101,199 @@ export interface DecidedAction {
   score: number;
 }
 
+interface Coord { x: number; y: number }
+interface Symmetry {
+  transform: (x: number, y: number) => Coord;
+  invert: (x: number, y: number) => Coord;
+  transformBoard: (b: Board) => Board;
+}
+
+const symmetries: Symmetry[] = [
+  // 1. Identity
+  {
+    transform: (x, y) => ({ x, y }),
+    invert: (x, y) => ({ x, y }),
+    transformBoard: (b) => b
+  },
+  // 2. Rotate 90
+  {
+    transform: (x, y) => ({ x: 4 - y, y: x }),
+    invert: (x, y) => ({ x: y, y: 4 - x }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[x][4 - y] = b[y][x];
+      }
+      return res;
+    }
+  },
+  // 3. Rotate 180
+  {
+    transform: (x, y) => ({ x: 4 - x, y: 4 - y }),
+    invert: (x, y) => ({ x: 4 - x, y: 4 - y }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[4 - y][4 - x] = b[y][x];
+      }
+      return res;
+    }
+  },
+  // 4. Rotate 270
+  {
+    transform: (x, y) => ({ x: y, y: 4 - x }),
+    invert: (x, y) => ({ x: 4 - y, y: x }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[4 - x][y] = b[y][x];
+      }
+      return res;
+    }
+  },
+  // 5. Flip Horizontal
+  {
+    transform: (x, y) => ({ x: 4 - x, y }),
+    invert: (x, y) => ({ x: 4 - x, y }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[y][4 - x] = b[y][x];
+      }
+      return res;
+    }
+  },
+  // 6. Flip Vertical
+  {
+    transform: (x, y) => ({ x, y: 4 - y }),
+    invert: (x, y) => ({ x, y: 4 - y }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[4 - y][x] = b[y][x];
+      }
+      return res;
+    }
+  },
+  // 7. Flip Diagonal (main)
+  {
+    transform: (x, y) => ({ x: y, y: x }),
+    invert: (x, y) => ({ x: y, y: x }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[x][y] = b[y][x];
+      }
+      return res;
+    }
+  },
+  // 8. Flip Diagonal (anti)
+  {
+    transform: (x, y) => ({ x: 4 - y, y: 4 - x }),
+    invert: (x, y) => ({ x: 4 - y, y: 4 - x }),
+    transformBoard: (b) => {
+      const res = Array.from({ length: 5 }, () => Array(5)) as any;
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) res[4 - x][4 - y] = b[y][x];
+      }
+      return res;
+    }
+  }
+];
+
+function evaluateStonePlacementWithLookahead(
+  state: GameState,
+  x: number,
+  y: number,
+  role: 'A' | 'B',
+  gene: AgentGene
+): number {
+  const testState = placeStone(state, x, y);
+  
+  if (testState.winner === role) {
+    return 100000; // Immediate win
+  }
+  if (testState.winner === 'draw') {
+    return 0;
+  }
+  if (testState.winner) {
+    return -100000; // Immediate loss (should not happen normally since it's our turn)
+  }
+
+  // Simulate opponent's turn (1 step lookahead response)
+  const opponent = role === 'A' ? 'B' : 'A';
+  let opponentBestScore = -Infinity;
+  let opponentBestState = testState;
+  let hasOpponentMoves = false;
+
+  const size = testState.board.length;
+  for (let oy = 0; oy < size; oy++) {
+    for (let ox = 0; ox < size; ox++) {
+      if (testState.board[oy][ox].type === 'empty') {
+        hasOpponentMoves = true;
+        const oppState = placeStone(testState, ox, oy);
+        const oppScore = evaluateBoardScore(oppState.board, opponent, gene);
+        if (oppScore > opponentBestScore) {
+          opponentBestScore = oppScore;
+          opponentBestState = oppState;
+        }
+      }
+    }
+  }
+
+  // If opponent has no empty cells to place, evaluate current board
+  if (!hasOpponentMoves) {
+    return evaluateBoardScore(testState.board, role, gene);
+  }
+
+  // Return the score from our perspective after opponent's best response
+  return evaluateBoardScore(opponentBestState.board, role, gene);
+}
+
 /**
  * Determine the next best action for the NPC agent
  */
-export function decideBestAction(state: GameState, role: 'A' | 'B', gene: AgentGene): DecidedAction {
+export function decideBestAction(
+  state: GameState, 
+  role: 'A' | 'B', 
+  gene: AgentGene,
+  openingBook?: { [boardHash: string]: any }
+): DecidedAction {
+  // Query Opening Book if provided
+  if (openingBook) {
+    const rawSerialized = serializeBoard(state.board);
+    let minSerialized = rawSerialized;
+    let bestSymIdx = 0;
+
+    for (let i = 0; i < symmetries.length; i++) {
+      const transBoard = symmetries[i].transformBoard(state.board);
+      const serialized = serializeBoard(transBoard);
+      if (serialized < minSerialized) {
+        minSerialized = serialized;
+        bestSymIdx = i;
+      }
+    }
+
+    if (openingBook[minSerialized]) {
+      const canonicalAction = openingBook[minSerialized];
+      const selectedSym = symmetries[bestSymIdx];
+
+      const decodedAction: DecidedAction = {
+        actionType: canonicalAction.actionType,
+        skillId: canonicalAction.skillId,
+        score: 999999 // High score to denote opening book selection
+      };
+
+      if (canonicalAction.x !== undefined && canonicalAction.y !== undefined) {
+        const restored = selectedSym.invert(canonicalAction.x, canonicalAction.y);
+        decodedAction.x = restored.x;
+        decodedAction.y = restored.y;
+      }
+
+      return decodedAction;
+    }
+  }
+
   const size = state.board.length;
   const currentCost = state.costs[role];
   
@@ -119,8 +308,7 @@ export function decideBestAction(state: GameState, role: 'A' | 'B', gene: AgentG
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       if (state.board[y][x].type === 'empty') {
-        const testState = placeStone(state, x, y);
-        const score = evaluateBoardScore(testState.board, role, gene);
+        const score = evaluateStonePlacementWithLookahead(state, x, y, role, gene);
         
         if (score > bestAction.score) {
           bestAction = {

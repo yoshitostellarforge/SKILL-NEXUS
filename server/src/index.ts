@@ -32,6 +32,18 @@ if (serviceAccountEnv) {
 
 const db = admin.apps.length > 0 ? admin.firestore() : null;
 
+interface GameMove {
+  boardBefore: string;
+  player: 'A' | 'B';
+  action: {
+    actionType: 'placeStone' | 'useSkill';
+    x?: number;
+    y?: number;
+    skillId?: string;
+    customPayload?: any;
+  };
+}
+
 interface RoomData {
   roomCode: string;
   players: { socketId: string; playerName: string; role: 'A' | 'B'; playerId: string; connected: boolean }[];
@@ -39,6 +51,7 @@ interface RoomData {
   draft: { A: { ready: boolean; skills: string[] }; B: { ready: boolean; skills: string[] } };
   rematch: { A: boolean; B: boolean };
   disconnectTimeout?: any;
+  moves: GameMove[];
 }
 const rooms = new Map<string, RoomData>();
 
@@ -105,7 +118,8 @@ setInterval(() => {
             ratingUpdated: false
           },
           draft: { A: { ready: false, skills: [] }, B: { ready: false, skills: [] } },
-          rematch: { A: false, B: false }
+          rematch: { A: false, B: false },
+          moves: []
         };
         rooms.set(roomCode, newRoom);
 
@@ -247,6 +261,30 @@ async function updatePlayerGlicko(winnerId: string, loserId: string, isDraw: boo
   };
 }
 
+async function saveKifuToFirestore(room: RoomData, winnerRole: 'A' | 'B' | 'draw') {
+  if (!db) return;
+  if (!room.moves || room.moves.length === 0) return;
+
+  try {
+    const playerA = room.players.find(p => p.role === 'A');
+    const playerB = room.players.find(p => p.role === 'B');
+
+    await db.collection('kifu').add({
+      roomCode: room.roomCode,
+      players: {
+        A: playerA ? { playerId: playerA.playerId, playerName: playerA.playerName } : null,
+        B: playerB ? { playerId: playerB.playerId, playerName: playerB.playerName } : null
+      },
+      winner: winnerRole,
+      moves: room.moves,
+      createdAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+    console.log(`Successfully saved match kifu to Firestore for room ${room.roomCode}`);
+  } catch (err) {
+    console.error("Failed to save match kifu to Firestore:", err);
+  }
+}
+
 function createInitialState() {
   return {
     board: Array.from({ length: 5 }, () => Array.from({ length: 5 }, () => ({ type: 'empty', hp: 1, statusEffects: [] }))),
@@ -338,6 +376,12 @@ io.on('connection', (socket) => {
             const remainingPlayer = room.players.find(p => p.connected);
             const disconnectedPlayer = room.players.find(p => !p.connected);
             if (remainingPlayer && disconnectedPlayer) {
+              // Save kifu to Firestore
+              if (room.state && !room.state.kifuSaved) {
+                room.state.kifuSaved = true;
+                await saveKifuToFirestore(room, remainingPlayer.role);
+              }
+
               let ratingResult = null;
               if (room.state && room.state.isRanked && !room.state.ratingUpdated) {
                 room.state.ratingUpdated = true;
@@ -466,7 +510,8 @@ io.on('connection', (socket) => {
           }],
           state: null,
           draft: { A: { ready: false, skills: [] }, B: { ready: false, skills: [] } },
-          rematch: { A: false, B: false }
+          rematch: { A: false, B: false },
+          moves: []
         });
         socket.join(roomCode);
         console.log(`Player ${payload.playerName} created room ${roomCode}`);
@@ -497,7 +542,8 @@ io.on('connection', (socket) => {
           ],
           state: createInitialState(),
           draft: { A: { ready: false, skills: [] }, B: { ready: false, skills: [] } },
-          rematch: { A: false, B: false }
+          rematch: { A: false, B: false },
+          moves: []
         };
         rooms.set(roomCode, newRoom);
 
@@ -588,17 +634,25 @@ io.on('connection', (socket) => {
   });
 
   // In-game Action Payload
-  socket.on('game:action', (payload: GameActionPayload) => {
+  socket.on('game:action', (payload: GameActionPayload & { boardBefore?: string; customPayload?: any }) => {
     const roomCode = Array.from(socket.rooms).find(r => r !== socket.id);
     if (roomCode) {
-      // Sync local state copy for potential reconnections
       const room = rooms.get(roomCode);
-      if (room && room.state) {
-        // In real server-side state evaluation, we would run:
-        // room.state = processAction(room.state, payload);
-        // For simple sync, we update the winner or state fields if passed, or just trust the actions.
-        // Let's also sync state updates if they are embedded or computed.
-        // To keep it simple, we just broadcast the action.
+      if (room) {
+        const player = room.players.find(p => p.socketId === socket.id);
+        if (player && payload.boardBefore) {
+          room.moves.push({
+            boardBefore: payload.boardBefore,
+            player: player.role,
+            action: {
+              actionType: payload.actionType,
+              x: payload.x,
+              y: payload.y,
+              skillId: payload.skillId,
+              customPayload: payload.customPayload
+            }
+          });
+        }
         socket.to(roomCode).emit('game:action:received', payload);
       }
     }
@@ -615,6 +669,12 @@ io.on('connection', (socket) => {
         if (surrenderPlayer && otherPlayer) {
           console.log(`Player ${surrenderPlayer.playerName} (${surrenderPlayer.role}) surrendered in room ${roomCode}`);
           
+          // Save kifu to Firestore
+          if (room.state && !room.state.kifuSaved) {
+            room.state.kifuSaved = true;
+            await saveKifuToFirestore(room, otherPlayer.role);
+          }
+
           let ratingResult = null;
           if (room.state && room.state.isRanked && !room.state.ratingUpdated) {
             room.state.ratingUpdated = true;
@@ -632,29 +692,43 @@ io.on('connection', (socket) => {
   });
 
   // End of Ranked Game report
-  socket.on('game:ranked:ended', async (payload: { winnerRole: 'A' | 'B' | 'draw' }) => {
+  socket.on('game:ranked:ended', async (payload: { winnerRole: 'A' | 'B' | 'draw'; moves?: GameMove[] }) => {
     const roomCode = Array.from(socket.rooms).find(r => r !== socket.id);
     if (roomCode) {
       const room = rooms.get(roomCode);
-      if (room && room.state && room.state.isRanked && !room.state.ratingUpdated) {
-        room.state.ratingUpdated = true;
-
-        const playerA = room.players.find(p => p.role === 'A')!;
-        const playerB = room.players.find(p => p.role === 'B')!;
-
-        let ratingResult = null;
-        if (payload.winnerRole === 'A') {
-          ratingResult = await updatePlayerGlicko(playerA.playerId, playerB.playerId, false);
-        } else if (payload.winnerRole === 'B') {
-          ratingResult = await updatePlayerGlicko(playerB.playerId, playerA.playerId, false);
-        } else if (payload.winnerRole === 'draw') {
-          ratingResult = await updatePlayerGlicko(playerA.playerId, playerB.playerId, true);
+      if (room && room.state) {
+        // Sync moves from client if server moves are empty
+        if (payload.moves && (!room.moves || room.moves.length === 0)) {
+          room.moves = payload.moves;
         }
 
-        io.to(roomCode).emit('game:rating:updated', { 
-          ratingResult, 
-          winnerRole: payload.winnerRole 
-        });
+        // Save kifu to Firestore
+        if (!room.state.kifuSaved) {
+          room.state.kifuSaved = true;
+          await saveKifuToFirestore(room, payload.winnerRole);
+        }
+
+        // Rating updates (Ranked matches only)
+        if (room.state.isRanked && !room.state.ratingUpdated) {
+          room.state.ratingUpdated = true;
+
+          const playerA = room.players.find(p => p.role === 'A')!;
+          const playerB = room.players.find(p => p.role === 'B')!;
+
+          let ratingResult = null;
+          if (payload.winnerRole === 'A') {
+            ratingResult = await updatePlayerGlicko(playerA.playerId, playerB.playerId, false);
+          } else if (payload.winnerRole === 'B') {
+            ratingResult = await updatePlayerGlicko(playerB.playerId, playerA.playerId, false);
+          } else if (payload.winnerRole === 'draw') {
+            ratingResult = await updatePlayerGlicko(playerA.playerId, playerB.playerId, true);
+          }
+
+          io.to(roomCode).emit('game:rating:updated', { 
+            ratingResult, 
+            winnerRole: payload.winnerRole 
+          });
+        }
       }
     }
   });
@@ -687,6 +761,8 @@ io.on('connection', (socket) => {
               A: { ready: false, skills: [] },
               B: { ready: false, skills: [] }
             };
+            // Reset moves history
+            room.moves = [];
             
             // Initialize new state
             room.state = createInitialState();
@@ -732,6 +808,20 @@ app.get('/api/best-agent', (req: Request, res: Response) => {
     },
     skills: ["skill_push", "skill_crash", "skill_swap"]
   });
+});
+
+// Add endpoint for fetching opening book json
+app.get('/api/opening-book', (req: Request, res: Response) => {
+  const OPENING_BOOK_PATH = path.join(__dirname, '../../simulation_results/opening_book.json');
+  try {
+    if (fs.existsSync(OPENING_BOOK_PATH)) {
+      const data = JSON.parse(fs.readFileSync(OPENING_BOOK_PATH, 'utf-8'));
+      return res.json(data);
+    }
+  } catch (e) {
+    console.warn("Failed to read opening_book.json from server endpoint. Returning empty.");
+  }
+  res.json({});
 });
 
 // Start the server
