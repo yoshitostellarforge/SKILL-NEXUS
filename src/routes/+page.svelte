@@ -113,9 +113,14 @@
       isWaitingForMatch = false;
       isRoomMenuOpen = false;
       isOnlineMatch = true;
-      const me = data.players.find((p: any) => p.socketId === socket.id || p.playerId === myPlayerId);
+      // Resolve who "I" am: prioritize socket.id first (supports multi-tab testing), fallback to playerId
+      let me = data.players.find((p: any) => p.socketId === socket.id);
+      if (!me) {
+        me = data.players.find((p: any) => p.playerId === myPlayerId);
+      }
       myRole = me ? me.role : null;
       
+      // Resolve opponent: any player that is not me
       const opponent = data.players.find((p: any) => p !== me);
       if (opponent) {
         opponentName = opponent.playerName;
@@ -216,7 +221,7 @@
       isOnlineMatch = true;
       myRole = data.myRole;
       
-      const opponent = data.players.find((p: any) => p.playerId !== myPlayerId);
+      const opponent = data.players.find((p: any) => p.role !== myRole);
       if (opponent) {
         opponentName = opponent.playerName;
         opponentDisconnected = !opponent.connected;
