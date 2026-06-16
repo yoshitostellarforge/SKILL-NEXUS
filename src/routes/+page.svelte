@@ -602,7 +602,7 @@
         <div style="display: flex; flex-direction: column; gap: 2rem; margin-top: 2rem;">
           <button class="primary-btn" style="padding: 1.5rem;" onclick={() => {
             const socket = socketManager.getSocket();
-            socket?.emit('joinQueue', { matchType: 'room', playerName: myPlayerName });
+            socket?.emit('joinQueue', { matchType: 'room', playerName: myPlayerName, playerId: myPlayerId });
           }}>
             CREATE NEW ROOM
             <br><span style="font-size: 0.85rem; font-weight: normal; margin-top: 0.5rem; display: inline-block;">(新しく部屋を作る)</span>
@@ -618,7 +618,7 @@
               <button class="secondary-btn" style="width: auto; padding: 0 2rem;" onclick={() => {
                 if (roomCodeInput.length === 5) {
                   const socket = socketManager.getSocket();
-                  socket?.emit('joinQueue', { matchType: 'room', roomCode: roomCodeInput, playerName: myPlayerName });
+                  socket?.emit('joinQueue', { matchType: 'room', roomCode: roomCodeInput, playerName: myPlayerName, playerId: myPlayerId });
                 } else {
                   alert('5文字のルームコードを入力してください');
                 }
@@ -778,7 +778,7 @@
 
       <div class="draft-list">
         {#each skills as skill}
-          {@const isSelected = draftSelectedSkills[myRole!].includes(skill.id)}
+          {@const isSelected = myRole ? draftSelectedSkills[myRole].includes(skill.id) : false}
           
           {#if isMobile}
             {@const isExpanded = expandedSkillId === skill.id}
@@ -850,10 +850,12 @@
         <div class="draft-actions">
           <button class="confirm-btn" style="{isMeReady ? 'background: #334155; color: #94a3b8; border-color: #334155;' : ''}"
                   onclick={() => {
-                    isMeReady = true;
-                    socketManager.getSocket()?.emit('draft:ready', { skills: draftSelectedSkills[myRole!] });
+                    if (myRole) {
+                      isMeReady = true;
+                      socketManager.getSocket()?.emit('draft:ready', { skills: draftSelectedSkills[myRole] });
+                    }
                   }} 
-                  disabled={draftSelectedSkills[myRole!].length < 3 || isMeReady}>
+                  disabled={!myRole || draftSelectedSkills[myRole].length < 3 || isMeReady}>
             {isMeReady ? '相手を待っています...' : '準備完了 (READY) →'}
           </button>
         </div>
@@ -861,12 +863,14 @@
     </div>
 
     {#if isMobile}
-      {#if draftSelectedSkills[myRole!].length === 3}
+      {#if myRole && draftSelectedSkills[myRole].length === 3}
         <div class="draft-sticky-footer animate-fade-in">
           <button class="confirm-btn sticky-confirm-btn" style="{isMeReady ? 'background: #334155; color: #94a3b8; border-color: #334155;' : ''}"
                   onclick={() => {
-                    isMeReady = true;
-                    socketManager.getSocket()?.emit('draft:ready', { skills: draftSelectedSkills[myRole!] });
+                    if (myRole) {
+                      isMeReady = true;
+                      socketManager.getSocket()?.emit('draft:ready', { skills: draftSelectedSkills[myRole] });
+                    }
                   }} 
                   disabled={isMeReady}>
             {isMeReady ? 'WAITING...' : 'READY →'}
