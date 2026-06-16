@@ -74,6 +74,7 @@
   let matchingElapsedSeconds = $state(0);
   let matchingTimer: any = null;
   let currentMatchType = $state<'casual' | 'ranked' | null>(null);
+  let isRankedMatch = $state(false);
 
   // Online Drafting and Intro state
   let isOpponentReady = $state(false);
@@ -156,6 +157,7 @@
       }
       isRoomMenuOpen = false;
       isOnlineMatch = true;
+      isRankedMatch = data.state?.isRanked || false;
       // Resolve who "I" am: prioritize socket.id first (supports multi-tab testing), fallback to playerId
       let me = data.players.find((p: any) => p.socketId === socket.id);
       if (!me) {
@@ -273,6 +275,7 @@
       state = data.state;
       isOnlineMatch = true;
       myRole = data.myRole;
+      isRankedMatch = data.state?.isRanked || false;
       
       const opponent = data.players.find((p: any) => p.role !== myRole);
       if (opponent) {
@@ -455,7 +458,7 @@
   }
 
   function checkRankedMatchEnd() {
-    if (isOnlineMatch && state.winner && currentRoomCode && state.isRanked) {
+    if (isOnlineMatch && state.winner && currentRoomCode && isRankedMatch) {
       if (state.winner === myRole) {
         socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: myRole });
       } else if (state.winner === 'draw' && myRole === 'A') {
@@ -635,6 +638,7 @@
     selectedSkillId = null;
     currentScreen = 'title';
     isOnlineMatch = false;
+    isRankedMatch = false;
     currentRoomCode = null;
     matchEndedReason = null;
     rematchRequests = { A: false, B: false };
@@ -1170,7 +1174,7 @@
       <div class="intro-overlay animate-fade-in" style="position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; padding: 1rem;">
         {#if introPhase === 'playerInfo'}
           <div class="animate-pulse-subtle" style="font-size: 1.5rem; color: #22d3ee; margin-bottom: 2rem; letter-spacing: 0.3em; font-weight: bold;">
-            {state.isRanked ? 'RANKED COMBAT INITIALIZED' : 'CASUAL COMBAT INITIALIZED'}
+            {isRankedMatch ? 'RANKED COMBAT INITIALIZED' : 'CASUAL COMBAT INITIALIZED'}
           </div>
           
           <div style="display: flex; align-items: center; justify-content: center; gap: 2.5rem; width: 100%; max-width: 900px; flex-wrap: wrap;">
@@ -1178,7 +1182,7 @@
             <div style="flex: 1; min-width: 260px; text-align: center; padding: 2rem; background: rgba(15, 23, 42, 0.9); border: 2px solid {myRankInfo.color}; box-shadow: 0 0 25px {myRankInfo.glowColor}; border-radius: 8px; border-top: 6px solid {myRankInfo.color};">
               <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; letter-spacing: 0.15em;">PLAYER A (YOU)</div>
               <div style="font-size: 2.2rem; font-weight: 800; color: #fff; margin-bottom: 0.8rem; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; text-shadow: 0 0 10px rgba(255,255,255,0.2);">{myPlayerName}</div>
-              {#if state.isRanked}
+              {#if isRankedMatch}
                 <div style="font-size: 1.15rem; font-weight: 800; color: {myRankInfo.color}; text-shadow: 0 0 8px {myRankInfo.glowColor}; margin-bottom: 0.4rem; letter-spacing: 0.1em;">
                   [ {myRankInfo.name} CLASS ]
                 </div>
@@ -1199,7 +1203,7 @@
             <div style="flex: 1; min-width: 260px; text-align: center; padding: 2rem; background: rgba(15, 23, 42, 0.9); border: 2px solid {opponentRankInfo ? opponentRankInfo.color : '#cbd5e1'}; box-shadow: 0 0 25px {opponentRankInfo ? opponentRankInfo.glowColor : 'rgba(203, 213, 225, 0.3)'}; border-radius: 8px; border-top: 6px solid {opponentRankInfo ? opponentRankInfo.color : '#cbd5e1'};">
               <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; letter-spacing: 0.15em;">PLAYER B (OPPONENT)</div>
               <div style="font-size: 2.2rem; font-weight: 800; color: #fff; margin-bottom: 0.8rem; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; text-shadow: 0 0 10px rgba(255,255,255,0.2);">{opponentName}</div>
-              {#if state.isRanked && opponentRankInfo}
+              {#if isRankedMatch && opponentRankInfo}
                 <div style="font-size: 1.15rem; font-weight: 800; color: {opponentRankInfo.color}; text-shadow: 0 0 8px {opponentRankInfo.glowColor}; margin-bottom: 0.4rem; letter-spacing: 0.1em;">
                   [ {opponentRankInfo.name} CLASS ]
                 </div>
@@ -1361,7 +1365,7 @@
                   {/if}
                 </p>
 
-                {#if state.isRanked && ratingUpdateResult}
+                {#if isRankedMatch && ratingUpdateResult}
                   {@const myRes = myRole === 'A' 
                     ? (state.winner === 'draw' ? ratingUpdateResult.winner : (state.winner === myRole ? ratingUpdateResult.winner : ratingUpdateResult.loser)) 
                     : (state.winner === 'draw' ? ratingUpdateResult.loser : (state.winner === myRole ? ratingUpdateResult.winner : ratingUpdateResult.loser))}
@@ -1415,7 +1419,7 @@
                 {/if}
 
                 {#if isOnlineMatch}
-                  {#if matchEndedReason === 'opponent_exited'}
+                  {#if matchEndedReason === 'opponent_exited' || isRankedMatch}
                     <div class="rematch-actions-row">
                       <button class="modal-reset-btn exit-btn" style="flex: 1; padding: 0.8rem; font-size: 0.9rem; border-radius: 4px;" onclick={resetGame}>
                         EXIT (終了)
