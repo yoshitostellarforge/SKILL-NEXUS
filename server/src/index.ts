@@ -49,12 +49,11 @@ const io = new Server(server, {
   }
 });
 
-// Setup Express middleware to allow CORS for static files in development
+// Setup Express middleware to allow CORS for static files
 // @ts-ignore
 app.use((req, res, next) => {
-  if (!isProduction) {
-    res.header('Access-Control-Allow-Origin', '*');
-  }
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
   next();
 });
 
