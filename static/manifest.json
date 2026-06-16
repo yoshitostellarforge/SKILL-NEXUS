@@ -1,0 +1,20 @@
+{
+  "name": "SKILL-NEXUS",
+  "short_name": "SKILL-NEXUS",
+  "description": "5×5 strategic tic-tac-toe with skill-based combat system",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "lang": "ja",
+  "categories": ["games"],
+  "icons": [
+    {
+      "src": "/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
