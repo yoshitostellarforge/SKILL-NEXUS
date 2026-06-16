@@ -1,8 +1,9 @@
 // @ts-ignore: IDE may not recognize esModuleInterop from the nested tsconfig
-import express from 'express';
+import express, { Request, Response } from 'express';
 import http from 'http';
 import { Server } from 'socket.io';
 import path from 'path';
+import fs from 'fs';
 import { JoinQueuePayload, GameActionPayload } from './types/game';
 import * as admin from 'firebase-admin';
 import { glicko2 } from 'glicko2-lite';
@@ -700,6 +701,36 @@ io.on('connection', (socket) => {
         }
       }
     }
+  });
+});
+
+// Add endpoint for fetching best agent weights
+app.get('/api/best-agent', (req: Request, res: Response) => {
+  const BEST_AGENT_PATH = path.join(__dirname, '../../simulation_results/best_agent.json');
+  try {
+    if (fs.existsSync(BEST_AGENT_PATH)) {
+      const data = JSON.parse(fs.readFileSync(BEST_AGENT_PATH, 'utf-8'));
+      return res.json(data);
+    }
+  } catch (e) {
+    console.warn("Failed to read best_agent.json from server endpoint. Returning default.");
+  }
+  
+  // Default fallback (matching the one in play.ts)
+  res.json({
+    id: "g15_elite_default",
+    attackWeight: 0.40,
+    defenseWeight: 0.55,
+    skillAggressiveness: 0.87,
+    skillWeights: {
+      "skill_push": 0.25,
+      "skill_shuffle": 0.60,
+      "skill_swap": 0.12,
+      "skill_crash": 0.33,
+      "skill_shield": 0.26,
+      "skill_chain_bomb": 0.49
+    },
+    skills: ["skill_push", "skill_crash", "skill_swap"]
   });
 });
 

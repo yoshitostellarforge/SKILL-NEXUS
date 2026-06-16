@@ -3,6 +3,7 @@
   import { socketManager } from '$lib/socket';
   import { createInitialGame, placeStone, useSkill } from '$lib/gameLogic';
   import { skills } from '$lib/skills';
+  import { decideBestAction, type AgentGene } from '$lib/evaluator';
   import type { SkillModule } from '$lib/types';
   import { auth, db, googleProvider, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, updateDoc, serverTimestamp } from '$lib/firebase';
 
@@ -13,6 +14,12 @@
   let state = $state(createInitialGame());
   let selectedSkillId = $state<string | null>(null);
   let activeHelpSkill = $state<SkillModule | null>(null);
+
+  // VS AI Mode States
+  let isVsAi = $state(false);
+  let aiGene = $state<AgentGene | null>(null);
+  let aiThinking = $state(false);
+  let isLocalhost = $state(false);
 
   // Firebase Auth & Firestore state
   let firebaseUser = $state<any>(null);
@@ -468,6 +475,9 @@
   }
 
   onMount(() => {
+    if (typeof window !== 'undefined') {
+      isLocalhost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.hostname.startsWith('192.168.');
+    }
     // Generate/Load persistent Player ID
     let storedId = localStorage.getItem('skillNexusPlayerId');
     if (!storedId) {
@@ -584,6 +594,101 @@
     skills.find((s) => s.id === selectedSkillId) || null
   );
 
+  async function startVsAiDraft() {
+    isOnlineMatch = false;
+    isVsAi = true;
+    aiThinking = false;
+    draftActivePlayer = 'A';
+    draftSelectedSkills = { A: [], B: [] };
+    expandedSkillId = null;
+
+    // AI info setup
+    myRole = 'A';
+    opponentName = 'Genetic AI';
+    opponentRating = 1750;
+    opponentRd = 50;
+
+    try {
+      const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3000';
+      const res = await fetch(`${serverUrl}/api/best-agent`);
+      if (res.ok) {
+        aiGene = await res.json();
+      } else {
+        throw new Error('Failed response');
+      }
+    } catch (e) {
+      console.warn("Failed to fetch evolved AI parameters. Using fallback weights.", e);
+      aiGene = {
+        id: "g15_elite_default",
+        attackWeight: 0.40,
+        defenseWeight: 0.55,
+        skillAggressiveness: 0.87,
+        skillWeights: {
+          "skill_push": 0.25,
+          "skill_shuffle": 0.60,
+          "skill_swap": 0.12,
+          "skill_crash": 0.33,
+          "skill_shield": 0.26,
+          "skill_chain_bomb": 0.49
+        },
+        skills: ["skill_push", "skill_crash", "skill_swap"],
+        wins: 0,
+        matches: 0
+      };
+    }
+
+    currentScreen = 'localSkillSelect';
+  }
+
+  async function runAiTurn() {
+    if (aiThinking) return;
+    aiThinking = true;
+
+    // Introduce AI thinking delay
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    if (!isVsAi || state.currentPlayer !== 'B' || state.winner) {
+      aiThinking = false;
+      return;
+    }
+
+    try {
+      const decision = decideBestAction(state, 'B', aiGene!);
+      
+      if (decision.actionType === 'placeStone') {
+        state = placeStone(state, decision.x!, decision.y!);
+      } else if (decision.actionType === 'useSkill') {
+        let customPayload: any = undefined;
+        if (decision.skillId === 'skill_shuffle') {
+          const result = Math.floor(Math.random() * 6) + 1;
+          const tempOrder = Array.from({ length: 9 }, (_, i) => i).sort(() => Math.random() - 0.5);
+          customPayload = { result, shuffleOrder: tempOrder };
+        }
+        state = useSkill(state, decision.skillId!, { x: decision.x, y: decision.y }, customPayload);
+      }
+    } catch (e) {
+      console.error("AI execution error, placing random stone:", e);
+      const emptyCells: {x: number, y: number}[] = [];
+      for (let y = 0; y < 5; y++) {
+        for (let x = 0; x < 5; x++) {
+          if (state.board[y][x].type === 'empty') emptyCells.push({x, y});
+        }
+      }
+      if (emptyCells.length > 0) {
+        const target = emptyCells[Math.floor(Math.random() * emptyCells.length)];
+        state = placeStone(state, target.x, target.y);
+      }
+    } finally {
+      aiThinking = false;
+    }
+  }
+
+  $effect(() => {
+    if (isVsAi && state.currentPlayer === 'B' && !state.winner && !aiThinking) {
+      runAiTurn();
+    }
+  });
+
   function startDraft() {
     isOnlineMatch = false;
     currentScreen = 'localSkillSelect';
@@ -614,7 +719,16 @@
       return;
     }
 
-    if (draftActivePlayer === 'A') {
+    if (isVsAi) {
+      state = createInitialGame();
+      state.selectedSkills = {
+        A: [...draftSelectedSkills.A],
+        B: [...(aiGene?.skills || [])]
+      };
+      opponentSkills = [...(aiGene?.skills || [])];
+      selectedSkillId = null;
+      currentScreen = 'battle';
+    } else if (draftActivePlayer === 'A') {
       draftActivePlayer = 'B';
     } else {
       // Both selected, initialize GameState and transition to Battle
@@ -638,6 +752,8 @@
     selectedSkillId = null;
     currentScreen = 'title';
     isOnlineMatch = false;
+    isVsAi = false;
+    aiThinking = false;
     isRankedMatch = false;
     currentRoomCode = null;
     matchEndedReason = null;
@@ -651,7 +767,7 @@
 
   function handleCellClick(x: number, y: number) {
     if (state.winner || introPhase !== 'none') return;
-    if (isOnlineMatch && state.currentPlayer !== myRole) return;
+    if ((isOnlineMatch || isVsAi) && state.currentPlayer !== myRole) return;
 
     if (selectedSkillId) {
       const activePlayer = state.currentPlayer;
@@ -691,7 +807,7 @@
 
   function handleSkillSelect(skill: SkillModule) {
     if (state.winner || introPhase !== 'none') return;
-    if (isOnlineMatch && state.currentPlayer !== myRole) return;
+    if ((isOnlineMatch || isVsAi) && state.currentPlayer !== myRole) return;
 
     const activePlayer = state.currentPlayer;
     if (state.costs[activePlayer] < skill.cost) {
@@ -818,6 +934,14 @@
           LOCAL MATCH
           <br><span style="font-size: 0.8rem; font-weight: normal; color: #94a3b8;">1 Screen 2 Players</span>
         </button>
+
+        {#if isLocalhost}
+          <!-- VS AI MATCH -->
+          <button class="primary-btn" onclick={startVsAiDraft} style="padding: 1.5rem; background: linear-gradient(135deg, #a855f7 0%, #22d3ee 100%); color: white; border-color: #a855f7;">
+            VS AI MATCH
+            <br><span style="font-size: 0.8rem; font-weight: normal; color: #e2e8f0;">Play against Evolved AI</span>
+          </button>
+        {/if}
         
         <!-- ONLINE MATCH -->
         <button class="primary-btn" onclick={goToOnlineMode} style="padding: 1.5rem;">
@@ -932,7 +1056,11 @@
         <h2 class="section-title">LOCAL SKILL DRAFTING</h2>
       </div>
       <div class="draft-indicator" class:player-a={draftActivePlayer === 'A'} class:player-b={draftActivePlayer === 'B'}>
-        プレイヤー {draftActivePlayer} のスキル選択 ({draftSelectedSkills[draftActivePlayer].length} / 3)
+        {#if isVsAi}
+          あなたのスキル選択 ({draftSelectedSkills[draftActivePlayer].length} / 3)
+        {:else}
+          プレイヤー {draftActivePlayer} のスキル選択 ({draftSelectedSkills[draftActivePlayer].length} / 3)
+        {/if}
       </div>
       <p class="desc-text text-center">対戦で使用するスキルを3つドラフトしてください。</p>
 
@@ -1024,7 +1152,11 @@
       {#if !isMobile}
         <div class="draft-actions">
           <button class="confirm-btn" onclick={confirmDraft} disabled={draftSelectedSkills[draftActivePlayer].length < 3}>
-            {draftActivePlayer === 'A' ? 'Player B の選択へ →' : '対戦を開始する →'}
+            {#if isVsAi}
+              対戦を開始する →
+            {:else}
+              {draftActivePlayer === 'A' ? 'Player B の選択へ →' : '対戦を開始する →'}
+            {/if}
           </button>
         </div>
       {/if}
@@ -1033,7 +1165,11 @@
     {#if isMobile && draftSelectedSkills[draftActivePlayer].length === 3}
       <div class="draft-sticky-footer animate-fade-in">
         <button class="confirm-btn sticky-confirm-btn" onclick={confirmDraft}>
-          {draftActivePlayer === 'A' ? 'Player B の選択へ →' : '対戦を開始する →'}
+          {#if isVsAi}
+            対戦を開始する →
+          {:else}
+            {draftActivePlayer === 'A' ? 'Player B の選択へ →' : '対戦を開始する →'}
+          {/if}
         </button>
       </div>
     {/if}
@@ -1253,8 +1389,12 @@
             <div class="indicator-glow"></div>
             <span class="label">CURRENT TURN</span>
             <span class="player-name">
-              {#if isOnlineMatch}
+              {#if aiThinking}
+                AI THINKING...
+              {:else if isOnlineMatch}
                 {state.currentPlayer === myRole ? `${myPlayerName} (YOU)` : opponentName}
+              {:else if isVsAi}
+                {state.currentPlayer === 'A' ? `${myPlayerName} (YOU)` : opponentName}
               {:else}
                 {state.currentPlayer === 'A' ? 'PLAYER A (Circle)' : 'PLAYER B (Cross)'}
               {/if}
@@ -1299,8 +1439,12 @@
         <section class="mobile-info-bar">
           <div class="turn-indicator" class:player-a={state.currentPlayer === 'A'} class:player-b={state.currentPlayer === 'B'}>
             <span class="player-name" style="font-size: 0.95rem; font-weight: 800;">
-              {#if isOnlineMatch}
+              {#if aiThinking}
+                AI THINKING...
+              {:else if isOnlineMatch}
                 {state.currentPlayer === myRole ? `${myPlayerName.substring(0, 8)} (YOU)` : opponentName.substring(0, 10)}
+              {:else if isVsAi}
+                {state.currentPlayer === 'A' ? `${myPlayerName.substring(0, 8)} (YOU)` : opponentName.substring(0, 10)}
               {:else}
                 {state.currentPlayer === 'A' ? 'PLAYER A (〇)' : 'PLAYER B (✕)'}
               {/if}
@@ -1454,7 +1598,7 @@
             </div>
           {/if}
 
-          <div class="board-wrapper card" class:targeting-active={!!selectedSkillId}>
+          <div class="board-wrapper card" class:targeting-active={!!selectedSkillId} style="{aiThinking ? 'pointer-events: none; opacity: 0.6;' : ''}">
             <div class="board-grid">
               {#each state.board as row, y}
                 {#each row as cell, x}

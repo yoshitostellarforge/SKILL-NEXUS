@@ -4,7 +4,7 @@ import readline from 'readline';
 import type { GameState, Board, Cell } from '../../../src/lib/types';
 import { createInitialGame, placeStone, useSkill } from '../../../src/lib/gameLogic';
 import { skills } from '../../../src/lib/skills';
-import { AgentGene, decideBestAction } from './evaluator';
+import { AgentGene, decideBestAction } from '../../../src/lib/evaluator';
 
 const BEST_AGENT_PATH = path.join(__dirname, '../../../simulation_results/best_agent.json');
 

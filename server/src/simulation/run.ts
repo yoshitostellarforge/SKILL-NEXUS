@@ -3,7 +3,7 @@ import path from 'path';
 import type { GameState } from '../../../src/lib/types';
 import { createInitialGame, placeStone, useSkill } from '../../../src/lib/gameLogic';
 import { skills } from '../../../src/lib/skills';
-import { AgentGene, decideBestAction } from './evaluator';
+import { AgentGene, decideBestAction } from '../../../src/lib/evaluator';
 
 const RESULTS_DIR = path.join(__dirname, '../../../simulation_results');
 const GENERATIONS = 15;      // Number of generations to simulate

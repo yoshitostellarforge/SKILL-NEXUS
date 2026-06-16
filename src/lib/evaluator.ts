@@ -1,6 +1,6 @@
-import type { GameState, Board, Cell } from '../../../src/lib/types';
-import { placeStone, useSkill, checkWinner } from '../../../src/lib/gameLogic';
-import { skills } from '../../../src/lib/skills';
+import type { GameState, Board, Cell } from './types';
+import { placeStone, useSkill } from './gameLogic';
+import { skills } from './skills';
 
 export interface AgentGene {
   id: string;
@@ -135,8 +135,6 @@ export function decideBestAction(state: GameState, role: 'A' | 'B', gene: AgentG
   }
 
   // 2. Evaluate skill usage options (only if we have drafted skills and enough cost)
-  // To avoid complex skill targeting simulation, we approximate outcomes for coordinate-targeting skills
-  // and evaluate global skills.
   if (gene.skillAggressiveness > 0.1) {
     for (const skillId of gene.skills) {
       const skill = skills.find(s => s.id === skillId);
