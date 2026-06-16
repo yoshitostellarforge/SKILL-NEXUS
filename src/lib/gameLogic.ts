@@ -133,7 +133,8 @@ export function placeStone(state: GameState, x: number, y: number): GameState {
 export function useSkill(
   state: GameState,
   skillId: string,
-  target?: { x?: number; y?: number }
+  target?: { x?: number; y?: number },
+  customPayload?: any
 ): GameState {
   if (state.winner) return state;
 
@@ -162,7 +163,7 @@ export function useSkill(
   stateWithDeduction.turnSkillCount += 1;
 
   // Execute skill and check for win state transitions
-  let nextState = skill.execute(stateWithDeduction, target);
+  let nextState = skill.execute(stateWithDeduction, target, customPayload);
 
   // Re-evaluate win condition in case state changed
   nextState.winner = checkWinner(nextState.board);

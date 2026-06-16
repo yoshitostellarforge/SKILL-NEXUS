@@ -36,7 +36,7 @@ export interface SkillModule {
   cost: number;
   targetType: 'cell' | 'player' | 'opponent' | 'global';
   getCellStyle(cell: Cell, x: number, y: number, state: GameState, isSelected: boolean): string;
-  execute(state: GameState, target?: { x?: number; y?: number }): GameState;
+  execute(state: GameState, target?: { x?: number; y?: number }, customPayload?: any): GameState;
 }
 
 export interface JoinQueuePayload {
@@ -50,4 +50,5 @@ export interface GameActionPayload {
   x?: number;
   y?: number;
   skillId?: string;
+  customPayload?: any;
 }

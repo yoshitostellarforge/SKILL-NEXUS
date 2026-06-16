@@ -173,7 +173,7 @@
       if (payload.actionType === 'placeStone') {
         state = placeStone(state, payload.x, payload.y);
       } else if (payload.actionType === 'useSkill') {
-        state = useSkill(state, payload.skillId, { x: payload.x, y: payload.y });
+        state = useSkill(state, payload.skillId, { x: payload.x, y: payload.y }, payload.customPayload);
       }
     });
 
@@ -435,9 +435,27 @@
     }
 
     if (skill.targetType === 'player' || skill.targetType === 'opponent' || skill.targetType === 'global') {
-      // Instant execution skills - consumes cost, increments turn count, stays on same player turn
-      state = useSkill(state, skill.id);
-      if (isOnlineMatch) socketManager.getSocket()?.emit('game:action', { actionType: 'useSkill', skillId: skill.id });
+      let customPayload: any = undefined;
+      if (skill.id === 'skill_shuffle') {
+        const result = Math.floor(Math.random() * 6) + 1;
+        const tempOrder = Array.from({ length: 9 }, (_, i) => i);
+        for (let i = tempOrder.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          const temp = tempOrder[i];
+          tempOrder[i] = tempOrder[j];
+          tempOrder[j] = temp;
+        }
+        customPayload = { result, shuffleOrder: tempOrder };
+      }
+
+      state = useSkill(state, skill.id, undefined, customPayload);
+      if (isOnlineMatch) {
+        socketManager.getSocket()?.emit('game:action', { 
+          actionType: 'useSkill', 
+          skillId: skill.id, 
+          customPayload 
+        });
+      }
       selectedSkillId = null;
     } else {
       // Coordinate-targeting skills

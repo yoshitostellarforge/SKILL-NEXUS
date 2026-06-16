@@ -14,9 +14,29 @@ export const shuffleSkill: SkillModule = {
     }
     return '';
   },
-  execute(state: GameState, target?: { x?: number; y?: number }): GameState {
+  execute(state: GameState, target?: { x?: number; y?: number }, customPayload?: { result: number; shuffleOrder: number[] }): GameState {
     const nextState: GameState = JSON.parse(JSON.stringify(state));
-    const result = Math.floor(Math.random() * 6) + 1;
+    
+    let result: number;
+    let shuffleOrder: number[];
+
+    // If customPayload containing synchronized result and shuffleOrder is provided, use it.
+    // Otherwise generate random values locally (offline fallback).
+    if (customPayload && typeof customPayload.result === 'number' && Array.isArray(customPayload.shuffleOrder)) {
+      result = customPayload.result;
+      shuffleOrder = customPayload.shuffleOrder;
+    } else {
+      result = Math.floor(Math.random() * 6) + 1;
+      
+      const indices = Array.from({ length: 9 }, (_, i) => i);
+      for (let i = indices.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const temp = indices[i];
+        indices[i] = indices[j];
+        indices[j] = temp;
+      }
+      shuffleOrder = indices;
+    }
 
     nextState.activeDiceRoll = {
       isRolling: true,
@@ -34,18 +54,16 @@ export const shuffleSkill: SkillModule = {
       }
     }
 
-    // Shuffle
-    for (let i = cells.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const temp = cells[i];
-      cells[i] = cells[j];
-      cells[j] = temp;
+    // Shuffle according to the determined order
+    const shuffledCells: Cell[] = [];
+    for (let i = 0; i < coords.length; i++) {
+      shuffledCells.push(cells[shuffleOrder[i]]);
     }
 
     // Re-assign shuffled cells to coordinates
     for (let i = 0; i < coords.length; i++) {
       const { x, y } = coords[i];
-      nextState.board[y][x] = cells[i];
+      nextState.board[y][x] = shuffledCells[i];
     }
 
     return nextState;
