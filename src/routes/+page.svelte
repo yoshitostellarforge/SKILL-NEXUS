@@ -19,6 +19,30 @@
   let isLoginRequiredOpen = $state(false);
   let isSavingName = $state(false);
 
+  // Glicko-2 state
+  let myRating = $state(1500);
+  let myRd = $state(350);
+  let myVolatility = $state(0.06);
+  let ratingUpdateResult = $state<any>(null);
+
+  type RankTier = 'UNRANKED' | 'BRONZE' | 'SILVER' | 'GOLD' | 'PLATINUM' | 'DIAMOND';
+  interface RankInfo {
+    tier: RankTier;
+    name: string;
+    color: string;
+    glowColor: string;
+  }
+  let myRankInfo = $derived<RankInfo>(getRankInfo(myRating));
+
+  function getRankInfo(rating: number): RankInfo {
+    if (rating < 1000) return { tier: 'UNRANKED', name: 'UNRANKED', color: '#64748b', glowColor: 'rgba(100, 116, 139, 0.4)' };
+    if (rating < 1200) return { tier: 'BRONZE', name: 'BRONZE', color: '#b45309', glowColor: 'rgba(180, 83, 9, 0.4)' };
+    if (rating < 1500) return { tier: 'SILVER', name: 'SILVER', color: '#94a3b8', glowColor: 'rgba(148, 163, 184, 0.4)' };
+    if (rating < 1800) return { tier: 'GOLD', name: 'GOLD', color: '#d97706', glowColor: 'rgba(217, 119, 6, 0.5)' };
+    if (rating < 2000) return { tier: 'PLATINUM', name: 'PLATINUM', color: '#06b6d4', glowColor: 'rgba(6, 182, 212, 0.6)' };
+    return { tier: 'DIAMOND', name: 'DIAMOND', color: '#a855f7', glowColor: 'rgba(168, 85, 247, 0.6)' };
+  }
+
   // Responsive state
   let isMobile = $state(false);
   let isSkillsDrawerOpen = $state(false);
@@ -43,6 +67,13 @@
   let isSearchingMatch = $state(false);
   let isOnlineMatch = $state(false);
   let myRole = $state<'A' | 'B' | null>(null);
+
+  let opponentRating = $state<number | null>(null);
+  let opponentRd = $state<number | null>(null);
+  let opponentRankInfo = $derived(opponentRating ? getRankInfo(opponentRating) : null);
+  let matchingElapsedSeconds = $state(0);
+  let matchingTimer: any = null;
+  let currentMatchType = $state<'casual' | 'ranked' | null>(null);
 
   // Online Drafting and Intro state
   let isOpponentReady = $state(false);
@@ -119,6 +150,10 @@
       state = data.state;
       isWaitingForMatch = false;
       isSearchingMatch = false;
+      if (matchingTimer) {
+        clearInterval(matchingTimer);
+        matchingTimer = null;
+      }
       isRoomMenuOpen = false;
       isOnlineMatch = true;
       // Resolve who "I" am: prioritize socket.id first (supports multi-tab testing), fallback to playerId
@@ -132,8 +167,12 @@
       const opponent = data.players.find((p: any) => p !== me);
       if (opponent) {
         opponentName = opponent.playerName;
+        opponentRating = opponent.rating || null;
+        opponentRd = opponent.rd || null;
       } else {
         opponentName = "Opponent";
+        opponentRating = null;
+        opponentRd = null;
       }
 
       // Reset draft state
@@ -188,6 +227,10 @@
       alert(`Error: ${data.message}`);
       isWaitingForMatch = false;
       isSearchingMatch = false;
+      if (matchingTimer) {
+        clearInterval(matchingTimer);
+        matchingTimer = null;
+      }
     });
 
     socket.on('game:action:received', (payload: any) => {
@@ -196,6 +239,7 @@
       } else if (payload.actionType === 'useSkill') {
         state = useSkill(state, payload.skillId, { x: payload.x, y: payload.y }, payload.customPayload);
       }
+      checkRankedMatchEnd();
     });
 
     // Reconnection events
@@ -252,12 +296,17 @@
     });
 
     // Match termination events
-    socket.on('opponent:surrendered', (data) => {
+    socket.on('opponent:surrendered', (data: any) => {
       if (state.winner) {
         matchEndedReason = 'opponent_exited';
       } else {
         state.winner = myRole;
         matchEndedReason = 'opponent_surrendered';
+      }
+      if (data && data.ratingResult) {
+        ratingUpdateResult = data.ratingResult;
+        myRating = data.ratingResult.winner.newRating;
+        myRd = data.ratingResult.winner.newRd;
       }
       opponentDisconnected = false;
       if (disconnectTimer) {
@@ -267,12 +316,17 @@
       currentScreen = 'battle';
     });
 
-    socket.on('game:opponent_abandoned', (data) => {
+    socket.on('game:opponent_abandoned', (data: any) => {
       if (state.winner) {
         matchEndedReason = 'opponent_exited';
       } else {
         state.winner = myRole;
         matchEndedReason = 'opponent_abandoned';
+      }
+      if (data && data.ratingResult) {
+        ratingUpdateResult = data.ratingResult;
+        myRating = data.ratingResult.winner.newRating;
+        myRd = data.ratingResult.winner.newRd;
       }
       opponentDisconnected = false;
       if (disconnectTimer) {
@@ -280,6 +334,27 @@
         disconnectTimer = null;
       }
       currentScreen = 'battle';
+    });
+
+    socket.on('game:rating:updated', (data: any) => {
+      ratingUpdateResult = data.ratingResult;
+      if (data && data.ratingResult) {
+        let selfResult = null;
+        if (myRole === 'A') {
+          selfResult = data.winnerRole === 'A' ? data.ratingResult.winner : (data.winnerRole === 'B' ? data.ratingResult.loser : null);
+        } else if (myRole === 'B') {
+          selfResult = data.winnerRole === 'B' ? data.ratingResult.winner : (data.winnerRole === 'A' ? data.ratingResult.loser : null);
+        }
+        
+        if (data.winnerRole === 'draw') {
+          selfResult = myRole === 'A' ? data.ratingResult.winner : data.ratingResult.loser;
+        }
+
+        if (selfResult) {
+          myRating = selfResult.newRating;
+          myRd = selfResult.newRd;
+        }
+      }
     });
 
     // Rematch events
@@ -345,12 +420,48 @@
       return;
     }
     isSearchingMatch = true;
+    currentMatchType = 'casual';
+    matchingElapsedSeconds = 0;
+    if (matchingTimer) clearInterval(matchingTimer);
+    matchingTimer = setInterval(() => {
+      matchingElapsedSeconds++;
+    }, 1000);
     socketManager.getSocket()?.emit('joinQueue', { matchType: 'casual', playerName: myPlayerName, playerId: myPlayerId });
   }
 
-  function cancelCasualMatching() {
+  function cancelMatching() {
     isSearchingMatch = false;
+    currentMatchType = null;
+    if (matchingTimer) {
+      clearInterval(matchingTimer);
+      matchingTimer = null;
+    }
     socketManager.getSocket()?.emit('leaveQueue');
+  }
+
+  function startRankedMatching() {
+    if (!firebaseUser) {
+      isLoginRequiredOpen = true;
+      return;
+    }
+    isSearchingMatch = true;
+    currentMatchType = 'ranked';
+    matchingElapsedSeconds = 0;
+    if (matchingTimer) clearInterval(matchingTimer);
+    matchingTimer = setInterval(() => {
+      matchingElapsedSeconds++;
+    }, 1000);
+    socketManager.getSocket()?.emit('joinQueue', { matchType: 'ranked', playerName: myPlayerName, playerId: myPlayerId });
+  }
+
+  function checkRankedMatchEnd() {
+    if (isOnlineMatch && state.winner && currentRoomCode && state.isRanked) {
+      if (state.winner === myRole) {
+        socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: myRole });
+      } else if (state.winner === 'draw' && myRole === 'A') {
+        socketManager.getSocket()?.emit('game:ranked:ended', { winnerRole: 'draw' });
+      }
+    }
   }
 
   onMount(() => {
@@ -375,7 +486,7 @@
       firebaseUser = user;
       if (user) {
         myPlayerId = user.uid;
-        // Load custom displayName from Firestore
+        // Load custom displayName and Glicko-2 stats from Firestore
         const userRef = doc(db, 'users', user.uid);
         try {
           const userSnap = await getDoc(userRef);
@@ -385,17 +496,25 @@
               myPlayerName = userData.displayName;
               localStorage.setItem('skillNexusPlayerName', myPlayerName);
             }
+            if (userData.rating) myRating = userData.rating;
+            if (userData.rd) myRd = userData.rd;
+            if (userData.volatility) myVolatility = userData.volatility;
           } else {
-            // Document doesn't exist, create it
+            // Document doesn't exist, create it with default Glicko-2 values
             const initialName = user.displayName || `Player_${Math.floor(Math.random() * 1000)}`;
             await setDoc(userRef, {
               displayName: initialName,
               rating: 1500,
+              rd: 350,
+              volatility: 0.06,
               titles: [],
               createdAt: serverTimestamp()
             });
             myPlayerName = initialName;
             localStorage.setItem('skillNexusPlayerName', myPlayerName);
+            myRating = 1500;
+            myRd = 350;
+            myVolatility = 0.06;
           }
         } catch (err) {
           console.error("Firestore loading error:", err);
@@ -438,6 +557,9 @@
     stopPingInterval();
     if (disconnectTimer) {
       clearInterval(disconnectTimer);
+    }
+    if (matchingTimer) {
+      clearInterval(matchingTimer);
     }
     if (authUnsubscribe) {
       authUnsubscribe();
@@ -560,6 +682,7 @@
       if (isOnlineMatch) socketManager.getSocket()?.emit('game:action', { actionType: 'placeStone', x, y });
       isSkillsDrawerOpen = false;
     }
+    checkRankedMatchEnd();
   }
 
   function handleSkillSelect(skill: SkillModule) {
@@ -603,6 +726,7 @@
         selectedSkillId = skill.id;
       }
     }
+    checkRankedMatchEnd();
   }
 </script>
 
@@ -710,10 +834,19 @@
       </div>
 
       <div class="menu-actions" style="margin-top: 1rem;">
-        <!-- RANKED MATCH (Main Banner) -->
-        <button class="primary-btn ranked-banner disabled-btn" disabled style="opacity: 0.5; height: 120px; font-size: 1.5rem; text-shadow: 0 0 10px rgba(255,0,0,0.8); border-color: #f43f5e; color: #f43f5e; display: flex; flex-direction: column; justify-content: center; align-items: center;">
+        <!-- RANKED MATCH -->
+        <button 
+          class="primary-btn ranked-banner" 
+          onclick={startRankedMatching}
+          style="height: 120px; font-size: 1.5rem; border-color: {myRankInfo.color}; color: {myRankInfo.color}; text-shadow: 0 0 10px {myRankInfo.glowColor}; box-shadow: inset 0 0 15px {myRankInfo.glowColor}, 0 0 15px {myRankInfo.glowColor}; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,0.5); transition: all 0.3s ease;"
+        >
           RANKED MATCH
-          <span style="font-size: 0.9rem; color: #fff; margin-top: 0.5rem; letter-spacing: 0.2em;">[ COMING SOON ]</span>
+          <span style="font-size: 0.8rem; color: #fff; margin-top: 0.25rem; font-weight: normal; letter-spacing: 0.15em;">
+            [ {myRankInfo.name} CLASS ]
+          </span>
+          <span style="font-size: 0.85rem; color: #cbd5e1; margin-top: 0.25rem; font-family: monospace;">
+            Rating: {myRating} <span style="font-size: 0.75rem; color: #94a3b8;">(±{myRd})</span>
+          </span>
         </button>
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
@@ -1034,10 +1167,50 @@
     {/if}
   {:else if currentScreen === 'battle'}
     {#if introPhase !== 'none'}
-      <div class="intro-overlay animate-fade-in" style="position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white;">
+      <div class="intro-overlay animate-fade-in" style="position: fixed; inset: 0; background: rgba(0,0,0,0.9); z-index: 9999; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; padding: 1rem;">
         {#if introPhase === 'playerInfo'}
-          <div class="animate-pulse-subtle" style="font-size: 1.5rem; color: #22d3ee; margin-bottom: 1rem; letter-spacing: 0.2em;">OPPONENT FOUND</div>
-          <div style="font-size: 3.5rem; font-weight: bold; text-shadow: 0 0 20px rgba(34, 211, 238, 0.8); letter-spacing: 0.1em; text-align: center; text-transform: uppercase;">{opponentName}</div>
+          <div class="animate-pulse-subtle" style="font-size: 1.5rem; color: #22d3ee; margin-bottom: 2rem; letter-spacing: 0.3em; font-weight: bold;">
+            {state.isRanked ? 'RANKED COMBAT INITIALIZED' : 'CASUAL COMBAT INITIALIZED'}
+          </div>
+          
+          <div style="display: flex; align-items: center; justify-content: center; gap: 2.5rem; width: 100%; max-width: 900px; flex-wrap: wrap;">
+            <!-- YOU -->
+            <div style="flex: 1; min-width: 260px; text-align: center; padding: 2rem; background: rgba(15, 23, 42, 0.9); border: 2px solid {myRankInfo.color}; box-shadow: 0 0 25px {myRankInfo.glowColor}; border-radius: 8px; border-top: 6px solid {myRankInfo.color};">
+              <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; letter-spacing: 0.15em;">PLAYER A (YOU)</div>
+              <div style="font-size: 2.2rem; font-weight: 800; color: #fff; margin-bottom: 0.8rem; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; text-shadow: 0 0 10px rgba(255,255,255,0.2);">{myPlayerName}</div>
+              {#if state.isRanked}
+                <div style="font-size: 1.15rem; font-weight: 800; color: {myRankInfo.color}; text-shadow: 0 0 8px {myRankInfo.glowColor}; margin-bottom: 0.4rem; letter-spacing: 0.1em;">
+                  [ {myRankInfo.name} CLASS ]
+                </div>
+                <div style="font-size: 1rem; color: #cbd5e1; font-family: monospace;">
+                  Rating: {myRating} <span style="font-size: 0.8rem; color: #94a3b8;">(±{myRd})</span>
+                </div>
+              {:else}
+                <div style="font-size: 1rem; color: #94a3b8; letter-spacing: 0.05em;">[ CASUAL MODE ]</div>
+              {/if}
+            </div>
+
+            <!-- VS Divider -->
+            <div style="font-size: 2.5rem; font-weight: 900; font-style: italic; color: #f43f5e; text-shadow: 0 0 15px rgba(244, 63, 94, 0.7); display: flex; align-items: center; justify-content: center; width: 60px; height: 60px; border-radius: 50%; border: 2px solid #f43f5e; background: rgba(0,0,0,0.5);">
+              VS
+            </div>
+
+            <!-- OPPONENT -->
+            <div style="flex: 1; min-width: 260px; text-align: center; padding: 2rem; background: rgba(15, 23, 42, 0.9); border: 2px solid {opponentRankInfo ? opponentRankInfo.color : '#cbd5e1'}; box-shadow: 0 0 25px {opponentRankInfo ? opponentRankInfo.glowColor : 'rgba(203, 213, 225, 0.3)'}; border-radius: 8px; border-top: 6px solid {opponentRankInfo ? opponentRankInfo.color : '#cbd5e1'};">
+              <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; letter-spacing: 0.15em;">PLAYER B (OPPONENT)</div>
+              <div style="font-size: 2.2rem; font-weight: 800; color: #fff; margin-bottom: 0.8rem; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; text-shadow: 0 0 10px rgba(255,255,255,0.2);">{opponentName}</div>
+              {#if state.isRanked && opponentRankInfo}
+                <div style="font-size: 1.15rem; font-weight: 800; color: {opponentRankInfo.color}; text-shadow: 0 0 8px {opponentRankInfo.glowColor}; margin-bottom: 0.4rem; letter-spacing: 0.1em;">
+                  [ {opponentRankInfo.name} CLASS ]
+                </div>
+                <div style="font-size: 1rem; color: #cbd5e1; font-family: monospace;">
+                  Rating: {opponentRating} <span style="font-size: 0.8rem; color: #94a3b8;">(±{opponentRd})</span>
+                </div>
+              {:else}
+                <div style="font-size: 1rem; color: #94a3b8; letter-spacing: 0.05em;">[ CASUAL MODE ]</div>
+              {/if}
+            </div>
+          </div>
         {:else if introPhase === 'skillsInfo'}
           <div style="font-size: 1.5rem; color: #22d3ee; margin-bottom: 2rem; letter-spacing: 0.2em;">OPPONENT'S SKILLS</div>
           <div style="display: flex; flex-wrap: wrap; gap: 1.5rem; justify-content: center; max-width: 800px; padding: 0 1rem;">
@@ -1159,11 +1332,11 @@
         <section class="board-area">
           {#if state.winner}
             <div class="winner-modal animate-pulse-subtle">
-              <div class="winner-banner" style="max-width: 90%; width: 400px; padding: 2rem 1.5rem;">
+              <div class="winner-banner" style="max-width: 90%; width: 420px; padding: 2rem 1.5rem; background: rgba(15, 23, 42, 0.95); border: 2px solid #22d3ee; box-shadow: 0 0 30px rgba(34, 211, 238, 0.4);">
                 {#if state.winner === 'draw'}
-                  <h2 style="font-size: 2.2rem; letter-spacing: 0.1em;">DRAW GAME</h2>
+                  <h2 style="font-size: 2.2rem; letter-spacing: 0.1em; color: #cbd5e1; text-align: center;">DRAW GAME</h2>
                 {:else}
-                  <h2 style="font-size: 2.2rem; letter-spacing: 0.1em; text-shadow: 0 0 15px rgba(34, 211, 238, 0.6);">
+                  <h2 style="font-size: 2.2rem; letter-spacing: 0.1em; text-align: center; text-shadow: 0 0 15px {state.winner === myRole ? 'rgba(34, 211, 238, 0.6)' : 'rgba(244, 63, 94, 0.6)'}; color: {state.winner === myRole ? '#22d3ee' : '#f43f5e'};">
                     {#if isOnlineMatch}
                       {#if matchEndedReason === 'opponent_exited'}
                         MATCH ENDED
@@ -1175,7 +1348,8 @@
                     {/if}
                   </h2>
                 {/if}
-                <p style="margin: 0.5rem 0 1.5rem 0; font-size: 0.95rem; color: #cbd5e1; line-height: 1.5;">
+                
+                <p style="margin: 0.5rem 0 1.5rem 0; font-size: 0.95rem; color: #cbd5e1; line-height: 1.5; text-align: center;">
                   {#if matchEndedReason === 'opponent_surrendered'}
                     相手プレイヤーが降伏（ギブアップ）しました。あなたの勝利です。
                   {:else if matchEndedReason === 'opponent_abandoned'}
@@ -1186,6 +1360,59 @@
                     4 stones aligned successfully.
                   {/if}
                 </p>
+
+                {#if state.isRanked && ratingUpdateResult}
+                  {@const myRes = myRole === 'A' 
+                    ? (state.winner === 'draw' ? ratingUpdateResult.winner : (state.winner === myRole ? ratingUpdateResult.winner : ratingUpdateResult.loser)) 
+                    : (state.winner === 'draw' ? ratingUpdateResult.loser : (state.winner === myRole ? ratingUpdateResult.winner : ratingUpdateResult.loser))}
+                  {@const oldRank = getRankInfo(myRes.oldRating)}
+                  {@const newRank = getRankInfo(myRes.newRating)}
+                  {@const ratingDiff = myRes.newRating - myRes.oldRating}
+                  
+                  <div style="background: rgba(0,0,0,0.5); border: 1px solid #334155; padding: 1.25rem; border-radius: 6px; margin: 1rem 0; text-align: center;">
+                    <div style="font-size: 0.85rem; color: #94a3b8; margin-bottom: 0.5rem; letter-spacing: 0.1em;">RATING UPDATE</div>
+                    
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 1rem; margin-bottom: 0.8rem;">
+                      <!-- Old Rating & Rank -->
+                      <div style="text-align: right; flex: 1;">
+                        <span style="font-size: 0.85rem; color: {oldRank.color}; font-weight: bold;">{oldRank.name}</span>
+                        <div style="font-size: 1.15rem; font-weight: bold; font-family: monospace; color: #fff;">{myRes.oldRating}</div>
+                      </div>
+                      
+                      <!-- Arrow -->
+                      <div style="font-size: 1.3rem; color: #22d3ee;">➔</div>
+                      
+                      <!-- New Rating & Rank -->
+                      <div style="text-align: left; flex: 1;">
+                        <span style="font-size: 0.95rem; color: {newRank.color}; font-weight: bold; text-shadow: 0 0 8px {newRank.glowColor};">{newRank.name}</span>
+                        <div style="font-size: 1.35rem; font-weight: 800; font-family: monospace; color: #fff; text-shadow: 0 0 10px rgba(255,255,255,0.3);">{myRes.newRating}</div>
+                      </div>
+                    </div>
+
+                    <!-- Change Value -->
+                    <div style="font-size: 1.15rem; font-weight: bold; font-family: monospace; color: {ratingDiff >= 0 ? '#22c55e' : '#ef4444'};">
+                      {ratingDiff >= 0 ? `+${ratingDiff}` : ratingDiff} Rating
+                      {#if ratingDiff >= 0}
+                        <span style="font-size: 0.85rem; margin-left: 0.2rem;">▲</span>
+                      {:else}
+                        <span style="font-size: 0.85rem; margin-left: 0.2rem;">▼</span>
+                      {/if}
+                    </div>
+
+                    <!-- RD Change -->
+                    <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.5rem; font-family: monospace;">
+                      Deviation (RD): {myRes.oldRd} ➔ {myRes.newRd} 
+                      <span style="color: #22d3ee; font-weight: bold;">(±{myRes.newRd})</span>
+                    </div>
+
+                    {#if oldRank.tier !== newRank.tier}
+                      <!-- Rank Up / Rank Down Notification -->
+                      <div class="animate-pulse-subtle" style="margin-top: 0.8rem; font-weight: 800; font-size: 0.95rem; letter-spacing: 0.1em; color: {ratingDiff >= 0 ? '#eab308' : '#ef4444'}; text-shadow: 0 0 8px {ratingDiff >= 0 ? 'rgba(234, 179, 8, 0.5)' : 'rgba(239, 68, 68, 0.5)'};">
+                        {ratingDiff >= 0 ? 'RANK TIER PROMOTED!' : 'RANK TIER DEMOTED'}
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
 
                 {#if isOnlineMatch}
                   {#if matchEndedReason === 'opponent_exited'}
@@ -1525,17 +1752,36 @@
 
   {#if isSearchingMatch}
     <div class="menu-modal-overlay animate-fade-in" style="z-index: 99999;">
-      <div class="menu-modal-card card" style="max-width: 400px; gap: 1.25rem; border-color: #22d3ee; box-shadow: 0 0 30px rgba(34, 211, 238, 0.4);">
-        <h3 class="menu-modal-title" style="color: #22d3ee; text-shadow: 0 0 10px rgba(34, 211, 238, 0.5); margin: 0; font-size: 1.4rem; letter-spacing: 0.1em;">MATCHMAKING</h3>
-        <p class="desc-text text-center" style="margin: 0.5rem 0; font-size: 1rem; color: #f8fafc;">対戦相手を探しています...</p>
+      <div 
+        class="menu-modal-card card" 
+        style="max-width: 400px; gap: 1.25rem; border-color: {currentMatchType === 'ranked' ? myRankInfo.color : '#22d3ee'}; box-shadow: 0 0 30px {currentMatchType === 'ranked' ? myRankInfo.glowColor : 'rgba(34, 211, 238, 0.4)'};"
+      >
+        <h3 class="menu-modal-title" style="color: {currentMatchType === 'ranked' ? myRankInfo.color : '#22d3ee'}; text-shadow: 0 0 10px {currentMatchType === 'ranked' ? myRankInfo.glowColor : 'rgba(34, 211, 238, 0.5)'}; margin: 0; font-size: 1.4rem; letter-spacing: 0.1em;">
+          {currentMatchType === 'ranked' ? 'RANKED MATCH' : 'CASUAL MATCH'}
+        </h3>
+        <p class="desc-text text-center" style="margin: 0.5rem 0; font-size: 1rem; color: #f8fafc;">
+          対戦相手を探しています...
+        </p>
+        
+        {#if currentMatchType === 'ranked'}
+          <div style="text-align: center; font-family: monospace; font-size: 0.9rem; color: #94a3b8; background: rgba(0,0,0,0.3); padding: 0.75rem; border-radius: 4px; border: 1px solid #1e293b;">
+            <div style="color: {myRankInfo.color}; font-weight: bold; margin-bottom: 0.2rem; text-shadow: 0 0 8px {myRankInfo.glowColor};">
+              [ {myRankInfo.name} CLASS ]
+            </div>
+            <div style="color: #fff;">Rating: {myRating} <span style="color: #94a3b8; font-size: 0.8rem;">(±{myRd})</span></div>
+            <div class="animate-pulse-subtle" style="margin-top: 0.5rem; color: #22d3ee; font-weight: bold;">
+              SEARCHING TARGET (±{100 + matchingElapsedSeconds * 10})...
+            </div>
+          </div>
+        {/if}
         
         <!-- Cyber Loading Spinner -->
         <div class="cyber-spinner-wrapper" style="margin: 1.5rem 0; display: flex; justify-content: center;">
-          <div class="cyber-spinner"></div>
+          <div class="cyber-spinner" style="border-left-color: {currentMatchType === 'ranked' ? myRankInfo.color : '#22d3ee'}; border-right-color: {currentMatchType === 'ranked' ? myRankInfo.color : '#22d3ee'};"></div>
         </div>
         
         <div class="menu-modal-actions" style="width: 100%;">
-          <button class="menu-modal-btn secondary-btn exit-btn" onclick={cancelCasualMatching}>
+          <button class="menu-modal-btn secondary-btn exit-btn" onclick={cancelMatching}>
             CANCEL (キャンセル)
           </button>
         </div>
