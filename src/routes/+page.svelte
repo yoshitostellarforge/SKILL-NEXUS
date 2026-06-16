@@ -116,8 +116,12 @@
       const me = data.players.find((p: any) => p.socketId === socket.id || p.playerId === myPlayerId);
       myRole = me ? me.role : null;
       
-      const opponent = data.players.find((p: any) => p.playerId !== myPlayerId);
-      if (opponent) opponentName = opponent.playerName;
+      const opponent = data.players.find((p: any) => p !== me);
+      if (opponent) {
+        opponentName = opponent.playerName;
+      } else {
+        opponentName = "Opponent";
+      }
 
       // Reset draft state
       isOpponentReady = false;
@@ -133,6 +137,9 @@
       }
       matchEndedReason = null;
       
+      // Start connection ping test for the new round
+      startPingInterval();
+
       currentScreen = 'onlineSkillSelect';
     });
 
