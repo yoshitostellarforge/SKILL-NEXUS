@@ -480,8 +480,8 @@
       
       <div class="settings-mock-list">
         <div class="mock-item" style="flex-direction: column; align-items: stretch; gap: 0.5rem; background: rgba(15, 23, 42, 0.8);">
-          <label style="color: #22d3ee; font-size: 0.9rem; letter-spacing: 0.1em;">ユーザー名 (オンライン用)</label>
-          <input type="text" bind:value={myPlayerName} style="padding: 0.8rem; background: #000; border: 1px solid #334155; border-radius: 4px; color: white; outline: none; font-size: 1rem;" />
+          <label for="my-player-name-input" style="color: #22d3ee; font-size: 0.9rem; letter-spacing: 0.1em;">ユーザー名 (オンライン用)</label>
+          <input id="my-player-name-input" type="text" bind:value={myPlayerName} style="padding: 0.8rem; background: #000; border: 1px solid #334155; border-radius: 4px; color: white; outline: none; font-size: 1rem;" />
           <button class="primary-btn compact-btn" style="margin-top: 0.5rem;" onclick={() => { localStorage.setItem('skillNexusPlayerName', myPlayerName); alert('名前を保存しました！'); currentScreen = 'title'; }}>
             SAVE & RETURN
           </button>
