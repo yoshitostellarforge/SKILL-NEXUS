@@ -15,6 +15,13 @@ interface RoomData {
 }
 const rooms = new Map<string, RoomData>();
 
+interface QueuePlayer {
+  socketId: string;
+  playerName: string;
+  playerId: string;
+}
+const casualQueue: QueuePlayer[] = [];
+
 function generateRoomCode() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let code = '';
@@ -68,6 +75,13 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log(`Client disconnected: ${socket.id}`);
+    
+    // Remove from casual queue if present
+    const qIndex = casualQueue.findIndex(p => p.socketId === socket.id);
+    if (qIndex !== -1) {
+      console.log(`Removing disconnected client from casual queue: ${socket.id}`);
+      casualQueue.splice(qIndex, 1);
+    }
     
     // Find room the socket was in
     for (const [roomCode, room] of rooms.entries()) {
@@ -162,6 +176,21 @@ io.on('connection', (socket) => {
 
   // Matchmaking: Join Queue
   socket.on('joinQueue', (payload: JoinQueuePayload) => {
+    // 1. 同一 playerId のプレイヤーがすでにアクティブなルームに存在するか二重ログインチェック
+    for (const [roomCode, room] of rooms.entries()) {
+      const activePlayer = room.players.find(p => p.playerId === payload.playerId && p.connected);
+      if (activePlayer) {
+        socket.emit('roomError', { message: 'このアカウントはすでに別のタブでオンライン対戦中か、ロビーに接続しています。' });
+        return;
+      }
+    }
+
+    // 2. 同一 playerId のプレイヤーがすでにカジュアル待機キューにいるかチェック
+    if (casualQueue.some(p => p.playerId === payload.playerId)) {
+      socket.emit('roomError', { message: 'すでにこのアカウントでマッチング待機中です。' });
+      return;
+    }
+
     if (payload.matchType === 'room') {
       if (payload.roomCode) {
         // Join existing room
@@ -182,7 +211,7 @@ io.on('connection', (socket) => {
           room.state = createInitialState();
           io.to(roomCode).emit('game:init', { roomCode, state: room.state, players: room.players });
         } else {
-          socket.emit('roomError', { message: 'Room not found or already full.' });
+          socket.emit('roomError', { message: '指定されたルームが見つからないか、すでに満員です。' });
         }
       } else {
         // Create new room
@@ -204,8 +233,54 @@ io.on('connection', (socket) => {
         console.log(`Player ${payload.playerName} created room ${roomCode}`);
         socket.emit('roomCreated', { roomCode });
       }
+    } else if (payload.matchType === 'casual') {
+      // カジュアル（ランダム）マッチング処理
+      console.log(`Player ${payload.playerName} entered casual queue: ${socket.id}`);
+      casualQueue.push({
+        socketId: socket.id,
+        playerName: payload.playerName,
+        playerId: payload.playerId
+      });
+
+      // 2人以上揃ったらマッチング成立
+      if (casualQueue.length >= 2) {
+        const player1 = casualQueue.shift()!;
+        const player2 = casualQueue.shift()!;
+
+        const roomCode = generateRoomCode();
+        console.log(`Casual Match matched! Creating room ${roomCode} for A:${player1.playerName} and B:${player2.playerName}`);
+
+        const newRoom: RoomData = {
+          roomCode,
+          players: [
+            { socketId: player1.socketId, playerName: player1.playerName, role: 'A', playerId: player1.playerId, connected: true },
+            { socketId: player2.socketId, playerName: player2.playerName, role: 'B', playerId: player2.playerId, connected: true }
+          ],
+          state: createInitialState(),
+          draft: { A: { ready: false, skills: [] }, B: { ready: false, skills: [] } },
+          rematch: { A: false, B: false }
+        };
+        rooms.set(roomCode, newRoom);
+
+        // 両ソケットをRoomに参加させて初期化イベントを送信
+        const s1 = io.sockets.sockets.get(player1.socketId);
+        const s2 = io.sockets.sockets.get(player2.socketId);
+        if (s1) s1.join(roomCode);
+        if (s2) s2.join(roomCode);
+
+        io.to(roomCode).emit('game:init', { roomCode, state: newRoom.state, players: newRoom.players });
+      }
     } else {
-      socket.emit('roomError', { message: 'Mode not implemented yet.' });
+      socket.emit('roomError', { message: 'サポートされていないゲームモードです。' });
+    }
+  });
+
+  // Leave Queue (for casual matchmaking cancellation)
+  socket.on('leaveQueue', () => {
+    const qIndex = casualQueue.findIndex(p => p.socketId === socket.id);
+    if (qIndex !== -1) {
+      console.log(`Player left casual queue: ${socket.id}`);
+      casualQueue.splice(qIndex, 1);
     }
   });
 

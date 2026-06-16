@@ -40,6 +40,7 @@
   let currentRoomCode = $state<string | null>(null);
   let myPlayerName = $state(`Player_${Math.floor(Math.random() * 1000)}`);
   let isWaitingForMatch = $state(false);
+  let isSearchingMatch = $state(false);
   let isOnlineMatch = $state(false);
   let myRole = $state<'A' | 'B' | null>(null);
 
@@ -117,6 +118,7 @@
       currentRoomCode = data.roomCode;
       state = data.state;
       isWaitingForMatch = false;
+      isSearchingMatch = false;
       isRoomMenuOpen = false;
       isOnlineMatch = true;
       // Resolve who "I" am: prioritize socket.id first (supports multi-tab testing), fallback to playerId
@@ -185,6 +187,7 @@
     socket.on('roomError', (data) => {
       alert(`Error: ${data.message}`);
       isWaitingForMatch = false;
+      isSearchingMatch = false;
     });
 
     socket.on('game:action:received', (payload: any) => {
@@ -334,6 +337,20 @@
     } else {
       currentScreen = 'onlineModeSelect';
     }
+  }
+
+  function startCasualMatching() {
+    if (!firebaseUser) {
+      isLoginRequiredOpen = true;
+      return;
+    }
+    isSearchingMatch = true;
+    socketManager.getSocket()?.emit('joinQueue', { matchType: 'casual', playerName: myPlayerName, playerId: myPlayerId });
+  }
+
+  function cancelCasualMatching() {
+    isSearchingMatch = false;
+    socketManager.getSocket()?.emit('leaveQueue');
   }
 
   onMount(() => {
@@ -701,9 +718,9 @@
 
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
           <!-- CASUAL MATCH -->
-          <button class="secondary-btn disabled-btn" disabled style="opacity: 0.5; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.5rem 0;">
+          <button class="secondary-btn" style="display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 1.5rem 0;" onclick={startCasualMatching}>
             CASUAL MATCH
-            <span style="font-size: 0.7rem; margin-top: 0.25rem;">[ LOCKED ]</span>
+            <span style="font-size: 0.7rem; margin-top: 0.25rem; color: #22d3ee;">[ ACTIVE ]</span>
           </button>
           
           <!-- ROOM MATCH -->
@@ -1505,9 +1522,49 @@
       </div>
     </div>
   {/if}
+
+  {#if isSearchingMatch}
+    <div class="menu-modal-overlay animate-fade-in" style="z-index: 99999;">
+      <div class="menu-modal-card card" style="max-width: 400px; gap: 1.25rem; border-color: #22d3ee; box-shadow: 0 0 30px rgba(34, 211, 238, 0.4);">
+        <h3 class="menu-modal-title" style="color: #22d3ee; text-shadow: 0 0 10px rgba(34, 211, 238, 0.5); margin: 0; font-size: 1.4rem; letter-spacing: 0.1em;">MATCHMAKING</h3>
+        <p class="desc-text text-center" style="margin: 0.5rem 0; font-size: 1rem; color: #f8fafc;">対戦相手を探しています...</p>
+        
+        <!-- Cyber Loading Spinner -->
+        <div class="cyber-spinner-wrapper" style="margin: 1.5rem 0; display: flex; justify-content: center;">
+          <div class="cyber-spinner"></div>
+        </div>
+        
+        <div class="menu-modal-actions" style="width: 100%;">
+          <button class="menu-modal-btn secondary-btn exit-btn" onclick={cancelCasualMatching}>
+            CANCEL (キャンセル)
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
+  /* Cyber Matchmaking Spinner */
+  .cyber-spinner-wrapper {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .cyber-spinner {
+    width: 50px;
+    height: 50px;
+    border: 3px solid rgba(34, 211, 238, 0.1);
+    border-left-color: #22d3ee;
+    border-right-color: #22d3ee;
+    border-radius: 50%;
+    animation: spin 1s linear infinite, cyber-glow 1.5s ease-in-out infinite alternate;
+  }
+  @keyframes cyber-glow {
+    from { box-shadow: 0 0 5px rgba(34, 211, 238, 0.2); }
+    to { box-shadow: 0 0 20px rgba(34, 211, 238, 0.6); }
+  }
+
   /* Connection Strength & Rematch Custom Styles */
   .ping-indicator {
     display: inline-flex;
