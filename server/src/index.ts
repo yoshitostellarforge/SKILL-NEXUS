@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import path from 'path';
 import { JoinQueuePayload, GameActionPayload } from './types/game';
 import * as admin from 'firebase-admin';
-import glicko2 from 'glicko2-lite';
+import { glicko2 } from 'glicko2-lite';
 
 // Initialize Firebase Admin SDK
 const serviceAccountEnv = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -166,12 +166,12 @@ async function updatePlayerGlicko(winnerId: string, loserId: string, isDraw: boo
       winnerRef.set({
         rating: Math.round(newA.rating),
         rd: Math.round(newA.rd),
-        volatility: newA.volatility
+        volatility: newA.vol
       }, { merge: true }),
       loserRef.set({
         rating: Math.round(newB.rating),
         rd: Math.round(newB.rd),
-        volatility: newB.volatility
+        volatility: newB.vol
       }, { merge: true })
     ]);
 
