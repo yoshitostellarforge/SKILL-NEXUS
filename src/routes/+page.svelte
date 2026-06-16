@@ -4,6 +4,7 @@
   import { createInitialGame, placeStone, useSkill } from '$lib/gameLogic';
   import { skills } from '$lib/skills';
   import type { SkillModule } from '$lib/types';
+  import { auth, db, googleProvider, onAuthStateChanged, signInWithPopup, signOut, doc, getDoc, setDoc, updateDoc, serverTimestamp } from '$lib/firebase';
 
   type ScreenState = 'title' | 'settings' | 'mainModeSelect' | 'onlineModeSelect' | 'roomLobby' | 'localSkillSelect' | 'onlineSkillSelect' | 'battle';
 
@@ -12,6 +13,11 @@
   let state = $state(createInitialGame());
   let selectedSkillId = $state<string | null>(null);
   let activeHelpSkill = $state<SkillModule | null>(null);
+
+  // Firebase Auth & Firestore state
+  let firebaseUser = $state<any>(null);
+  let isLoginRequiredOpen = $state(false);
+  let isSavingName = $state(false);
 
   // Responsive state
   let isMobile = $state(false);
@@ -244,8 +250,12 @@
 
     // Match termination events
     socket.on('opponent:surrendered', (data) => {
-      state.winner = myRole;
-      matchEndedReason = 'opponent_surrendered';
+      if (state.winner) {
+        matchEndedReason = 'opponent_exited';
+      } else {
+        state.winner = myRole;
+        matchEndedReason = 'opponent_surrendered';
+      }
       opponentDisconnected = false;
       if (disconnectTimer) {
         clearInterval(disconnectTimer);
@@ -255,8 +265,12 @@
     });
 
     socket.on('game:opponent_abandoned', (data) => {
-      state.winner = myRole;
-      matchEndedReason = 'opponent_abandoned';
+      if (state.winner) {
+        matchEndedReason = 'opponent_exited';
+      } else {
+        state.winner = myRole;
+        matchEndedReason = 'opponent_abandoned';
+      }
       opponentDisconnected = false;
       if (disconnectTimer) {
         clearInterval(disconnectTimer);
@@ -269,6 +283,57 @@
     socket.on('rematch:update', (data) => {
       rematchRequests = data.rematch;
     });
+  }
+
+  let authUnsubscribe: () => void;
+
+  async function loginWithGoogle() {
+    try {
+      await signInWithPopup(auth, googleProvider);
+      isLoginRequiredOpen = false;
+    } catch (err: any) {
+      alert(`ログインに失敗しました: ${err.message}`);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await signOut(auth);
+      alert('ログアウトしました。');
+    } catch (err: any) {
+      alert(`ログアウトに失敗しました: ${err.message}`);
+    }
+  }
+
+  async function saveSettings() {
+    if (firebaseUser) {
+      isSavingName = true;
+      const userRef = doc(db, 'users', firebaseUser.uid);
+      try {
+        await updateDoc(userRef, {
+          displayName: myPlayerName
+        });
+        localStorage.setItem('skillNexusPlayerName', myPlayerName);
+        alert('設定を保存しました！');
+        currentScreen = 'title';
+      } catch (err: any) {
+        alert(`保存に失敗しました: ${err.message}`);
+      } finally {
+        isSavingName = false;
+      }
+    } else {
+      localStorage.setItem('skillNexusPlayerName', myPlayerName);
+      alert('ローカル設定を保存しました！ (オンライン対戦にはログインが必要です)');
+      currentScreen = 'title';
+    }
+  }
+
+  function goToOnlineMode() {
+    if (!firebaseUser) {
+      isLoginRequiredOpen = true;
+    } else {
+      currentScreen = 'onlineModeSelect';
+    }
   }
 
   onMount(() => {
@@ -287,6 +352,47 @@
     } else {
       localStorage.setItem('skillNexusPlayerName', myPlayerName);
     }
+
+    // Sync with Firebase Auth
+    authUnsubscribe = onAuthStateChanged(auth, async (user) => {
+      firebaseUser = user;
+      if (user) {
+        myPlayerId = user.uid;
+        // Load custom displayName from Firestore
+        const userRef = doc(db, 'users', user.uid);
+        try {
+          const userSnap = await getDoc(userRef);
+          if (userSnap.exists()) {
+            const userData = userSnap.data();
+            if (userData.displayName) {
+              myPlayerName = userData.displayName;
+              localStorage.setItem('skillNexusPlayerName', myPlayerName);
+            }
+          } else {
+            // Document doesn't exist, create it
+            const initialName = user.displayName || `Player_${Math.floor(Math.random() * 1000)}`;
+            await setDoc(userRef, {
+              displayName: initialName,
+              rating: 1500,
+              titles: [],
+              createdAt: serverTimestamp()
+            });
+            myPlayerName = initialName;
+            localStorage.setItem('skillNexusPlayerName', myPlayerName);
+          }
+        } catch (err) {
+          console.error("Firestore loading error:", err);
+        }
+      } else {
+        // Fallback to local storage if not logged in
+        let storedId = localStorage.getItem('skillNexusPlayerId');
+        if (storedId) myPlayerId = storedId;
+        const storedName = localStorage.getItem('skillNexusPlayerName');
+        if (storedName) {
+          myPlayerName = storedName;
+        }
+      }
+    });
 
     // Initialize Socket.io connection to backend server
     const socket = socketManager.connect();
@@ -315,6 +421,9 @@
     stopPingInterval();
     if (disconnectTimer) {
       clearInterval(disconnectTimer);
+    }
+    if (authUnsubscribe) {
+      authUnsubscribe();
     }
     // Disconnect when component is destroyed
     socketManager.disconnect();
@@ -510,16 +619,32 @@
       
       <div class="settings-mock-list">
         <div class="mock-item" style="flex-direction: column; align-items: stretch; gap: 0.5rem; background: rgba(15, 23, 42, 0.8);">
-          <label for="my-player-name-input" style="color: #22d3ee; font-size: 0.9rem; letter-spacing: 0.1em;">ユーザー名 (オンライン用)</label>
+          <label for="my-player-name-input" style="color: #22d3ee; font-size: 0.9rem; letter-spacing: 0.1em;">
+            {firebaseUser ? 'ユーザー名 (Firestore保存)' : 'ユーザー名 (ローカル一時保存)'}
+          </label>
           <input id="my-player-name-input" type="text" bind:value={myPlayerName} style="padding: 0.8rem; background: #000; border: 1px solid #334155; border-radius: 4px; color: white; outline: none; font-size: 1rem;" />
-          <button class="primary-btn compact-btn" style="margin-top: 0.5rem;" onclick={() => { localStorage.setItem('skillNexusPlayerName', myPlayerName); alert('名前を保存しました！'); currentScreen = 'title'; }}>
-            SAVE & RETURN
+          <button class="primary-btn compact-btn" style="margin-top: 0.5rem;" onclick={saveSettings} disabled={isSavingName}>
+            {isSavingName ? 'SAVING...' : 'SAVE & RETURN'}
           </button>
         </div>
-        <div class="mock-item">
-          <span>オンライン対戦アカウント連携</span>
-          <span class="badge">Placeholder</span>
-        </div>
+        {#if firebaseUser}
+          <div class="mock-item" style="background: rgba(15, 23, 42, 0.8); justify-content: space-between; align-items: center; padding: 1rem; border: 1px solid #22d3ee; border-radius: 4px;">
+            <div style="display: flex; flex-direction: column; gap: 0.2rem; text-align: left;">
+              <span style="font-size: 0.8rem; color: #94a3b8;">連携済みアカウント</span>
+              <span style="font-size: 0.95rem; color: #fff; font-weight: bold;">{firebaseUser.email}</span>
+            </div>
+            <button class="exit-btn modal-reset-btn" style="width: auto; padding: 0.5rem 1rem; font-size: 0.85rem; border-radius: 4px;" onclick={handleLogout}>
+              LOGOUT
+            </button>
+          </div>
+        {:else}
+          <div class="mock-item" style="flex-direction: column; gap: 0.5rem; background: rgba(15, 23, 42, 0.8); align-items: stretch; padding: 1rem; border: 1px solid #f43f5e; border-radius: 4px;">
+            <span style="font-size: 0.85rem; color: #e2e8f0; text-align: center;">オンライン対戦を行うにはログインが必要です。</span>
+            <button class="primary-btn compact-btn" style="align-self: center; width: auto; padding: 0.6rem 1.5rem;" onclick={loginWithGoogle}>
+              GOOGLEでログイン
+            </button>
+          </div>
+        {/if}
         <div class="mock-item">
           <span>プレイ履歴 & 称号一覧</span>
           <span class="badge">Locked</span>
@@ -550,7 +675,7 @@
         </button>
         
         <!-- ONLINE MATCH -->
-        <button class="primary-btn" onclick={() => currentScreen = 'onlineModeSelect'} style="padding: 1.5rem;">
+        <button class="primary-btn" onclick={goToOnlineMode} style="padding: 1.5rem;">
           ONLINE MATCH
           <br><span style="font-size: 0.8rem; font-weight: normal; color: #000;">Multiplayer Network</span>
         </button>
@@ -1023,7 +1148,11 @@
                 {:else}
                   <h2 style="font-size: 2.2rem; letter-spacing: 0.1em; text-shadow: 0 0 15px rgba(34, 211, 238, 0.6);">
                     {#if isOnlineMatch}
-                      {state.winner === myRole ? 'VICTORY' : 'DEFEAT'}
+                      {#if matchEndedReason === 'opponent_exited'}
+                        MATCH ENDED
+                      {:else}
+                        {state.winner === myRole ? 'VICTORY' : 'DEFEAT'}
+                      {/if}
                     {:else}
                       PLAYER {state.winner} WINS!
                     {/if}
@@ -1034,32 +1163,42 @@
                     相手プレイヤーが降伏（ギブアップ）しました。あなたの勝利です。
                   {:else if matchEndedReason === 'opponent_abandoned'}
                     相手プレイヤーとの接続が切れ、制限時間を経過しました。あなたの勝利です。
+                  {:else if matchEndedReason === 'opponent_exited'}
+                    対戦相手が退出しました。対戦を終了します。
                   {:else}
                     4 stones aligned successfully.
                   {/if}
                 </p>
 
                 {#if isOnlineMatch}
-                  <div class="rematch-status-area">
-                    <div class="rematch-status-badge" class:ready={iWantRematch}>
-                      {myPlayerName} (YOU): {iWantRematch ? 'READY' : 'WAITING...'}
+                  {#if matchEndedReason === 'opponent_exited'}
+                    <div class="rematch-actions-row">
+                      <button class="modal-reset-btn exit-btn" style="flex: 1; padding: 0.8rem; font-size: 0.9rem; border-radius: 4px;" onclick={resetGame}>
+                        EXIT (終了)
+                      </button>
                     </div>
-                    <div class="rematch-status-badge" class:ready={opponentWantsRematch}>
-                      {opponentName}: {opponentWantsRematch ? 'READY' : 'WAITING...'}
+                  {:else}
+                    <div class="rematch-status-area">
+                      <div class="rematch-status-badge" class:ready={iWantRematch}>
+                        {myPlayerName} (YOU): {iWantRematch ? 'READY' : 'WAITING...'}
+                      </div>
+                      <div class="rematch-status-badge" class:ready={opponentWantsRematch}>
+                        {opponentName}: {opponentWantsRematch ? 'READY' : 'WAITING...'}
+                      </div>
                     </div>
-                  </div>
-                  
-                  <div class="rematch-actions-row">
-                    <button class="modal-reset-btn rematch-btn" style="flex: 1; padding: 0.8rem; font-size: 0.9rem; border-radius: 4px;" onclick={() => {
-                      const socket = socketManager.getSocket();
-                      socket?.emit('rematch:request');
-                    }} disabled={iWantRematch}>
-                      {iWantRematch ? 'REQUEST SENT' : 'REMATCH (再戦)'}
-                    </button>
-                    <button class="modal-reset-btn exit-btn" style="flex: 1; padding: 0.8rem; font-size: 0.9rem; border-radius: 4px;" onclick={resetGame}>
-                      EXIT (終了)
-                    </button>
-                  </div>
+                    
+                    <div class="rematch-actions-row">
+                      <button class="modal-reset-btn rematch-btn" style="flex: 1; padding: 0.8rem; font-size: 0.9rem; border-radius: 4px;" onclick={() => {
+                        const socket = socketManager.getSocket();
+                        socket?.emit('rematch:request');
+                      }} disabled={iWantRematch}>
+                        {iWantRematch ? 'REQUEST SENT' : 'REMATCH (再戦)'}
+                      </button>
+                      <button class="modal-reset-btn exit-btn" style="flex: 1; padding: 0.8rem; font-size: 0.9rem; border-radius: 4px;" onclick={resetGame}>
+                        EXIT (終了)
+                      </button>
+                    </div>
+                  {/if}
                 {:else}
                   <button class="modal-reset-btn" onclick={resetGame}>Back to Title</button>
                 {/if}
@@ -1343,6 +1482,26 @@
         <p class="desc-text" style="margin: 0.5rem 0; font-size: 1rem; line-height: 1.5;">サーバーとの接続が切断されました。</p>
         <div class="spinner" style="border: 4px solid rgba(234, 179, 8, 0.1); border-left-color: #eab308; border-radius: 50%; width: 40px; height: 40px; margin: 0.5rem auto; animation: spin 1s linear infinite;"></div>
         <p style="font-size: 0.85rem; color: #94a3b8; margin: 0; line-height: 1.4;">インターネット接続を確認し、再接続を待っています...</p>
+      </div>
+    </div>
+  {/if}
+
+  {#if isLoginRequiredOpen}
+    <div class="menu-modal-overlay animate-fade-in" style="z-index: 99999;">
+      <div class="menu-modal-card card" style="max-width: 400px; gap: 1.25rem; border-color: #22d3ee; box-shadow: 0 0 25px rgba(34, 211, 238, 0.4);">
+        <h3 class="menu-modal-title" style="color: #22d3ee; text-shadow: 0 0 10px rgba(34, 211, 238, 0.5); margin: 0; font-size: 1.4rem;">LOGIN REQUIRED</h3>
+        <p class="desc-text text-center" style="margin: 0.5rem 0; font-size: 0.95rem; color: #cbd5e1; line-height: 1.5;">
+          オンライン対戦（オンラインドラフト・対戦部屋作成）を利用するには、Googleアカウント連携（ログイン）が必要です。
+        </p>
+        
+        <div class="menu-modal-actions" style="flex-direction: column; gap: 0.8rem; width: 100%; margin-top: 0.5rem;">
+          <button class="menu-modal-btn primary-btn" onclick={loginWithGoogle}>
+            GOOGLEでログイン
+          </button>
+          <button class="menu-modal-btn secondary-btn" onclick={() => isLoginRequiredOpen = false}>
+            キャンセル
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -2350,20 +2509,26 @@
 
   /* Winner Overlay Modals */
   .winner-modal {
-    position: absolute;
+    position: fixed;
     inset: 0;
-    z-index: 10;
-    background: rgba(0, 0, 0, 0.95);
-    border: 2px solid #22d3ee;
-    border-radius: 0.25rem;
+    z-index: 2000;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(5px);
     display: flex;
     justify-content: center;
     align-items: center;
-    padding: 2rem;
-    box-shadow: 0 0 30px rgba(34, 211, 238, 0.2);
+    padding: 1.5rem;
   }
 
   .winner-banner {
+    background: rgba(15, 23, 42, 0.95);
+    border: 2px solid #22d3ee;
+    border-radius: 0.25rem;
+    box-shadow: 0 0 30px rgba(34, 211, 238, 0.4);
+    max-width: 400px;
+    width: 90%;
+    padding: 2rem 1.5rem;
+    box-sizing: border-box;
     text-align: center;
   }
 
