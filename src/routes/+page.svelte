@@ -239,6 +239,7 @@
         clearInterval(disconnectTimer);
         disconnectTimer = null;
       }
+      currentScreen = 'battle';
     });
 
     socket.on('game:opponent_abandoned', (data) => {
@@ -249,6 +250,7 @@
         clearInterval(disconnectTimer);
         disconnectTimer = null;
       }
+      currentScreen = 'battle';
     });
 
     // Rematch events
@@ -2609,6 +2611,37 @@
       height: 2px;
       background-color: #22d3ee;
       border-radius: 1px;
+    }
+
+    /* Lobby Screen Mobile Layout Fixes */
+    .screen-card {
+      margin: 1.5rem auto !important;
+      padding: 1.25rem !important;
+      width: 92% !important;
+      box-sizing: border-box;
+      max-height: 85vh;
+      overflow-y: auto;
+    }
+    .screen-header {
+      flex-direction: row !important;
+      justify-content: space-between;
+      align-items: center;
+      gap: 0.5rem;
+      width: 100%;
+    }
+    .screen-header .section-title {
+      margin-right: 0 !important;
+      font-size: 1.25rem !important;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .screen-header .back-btn {
+      padding: 0.4rem 0.8rem !important;
+      font-size: 0.8rem !important;
+    }
+    .screen-header .ping-indicator {
+      padding: 0.3rem 0.6rem !important;
+      font-size: 0.75rem !important;
     }
   }
 
