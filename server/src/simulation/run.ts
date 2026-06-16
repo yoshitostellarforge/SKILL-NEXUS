@@ -10,20 +10,24 @@ const POOL_SIZE = 20;        // Number of agents per generation
 const MATCHES_PER_PAIR = 2;   // 2 matches per pair (one as A, one as B) for fairness
 const MUTATION_RATE = 0.15;   // Probability of parameter mutation
 
-// Dynamic generations parsing from CLI arguments
+// Dynamic generations and CPU load mode parsing from CLI arguments
 let generations = 15;
-let sleepDelayMs = 10; // Default 10ms sleep to throttle CPU
+let sleepDelayMs = 15; // Default to low load (15ms sleep)
+let loadMode: 'low' | 'high' = 'low';
+
 const args = process.argv.slice(2);
-if (args.length > 0) {
-  const parsedVal = parseInt(args[0], 10);
-  if (!isNaN(parsedVal) && parsedVal > 0) {
-    generations = parsedVal;
-  }
-}
-if (args.length > 1) {
-  const parsedDelay = parseInt(args[1], 10);
-  if (!isNaN(parsedDelay) && parsedDelay >= 0) {
-    sleepDelayMs = parsedDelay;
+for (const arg of args) {
+  if (arg.toLowerCase() === 'high') {
+    loadMode = 'high';
+    sleepDelayMs = 0; // Maximum performance (no sleep delay)
+  } else if (arg.toLowerCase() === 'low') {
+    loadMode = 'low';
+    sleepDelayMs = 15; // Low CPU load (15ms sleep delay)
+  } else {
+    const parsedVal = parseInt(arg, 10);
+    if (!isNaN(parsedVal) && parsedVal > 0) {
+      generations = parsedVal;
+    }
   }
 }
 
@@ -213,6 +217,7 @@ async function runSimulation() {
   console.log(`RESULTS_DIR is: ${RESULTS_DIR}`);
   console.log(`Generations: ${generations}`);
   console.log(`Pool Size: ${POOL_SIZE}`);
+  console.log(`Load Mode: ${loadMode.toUpperCase()} (Delay: ${sleepDelayMs}ms)`);
   console.log(`Output Directory: ${RESULTS_DIR}\n`);
 
   // Ensure results folder exists
