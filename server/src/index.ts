@@ -44,7 +44,7 @@ const PORT = process.env.PORT || 3000;
 // Setup CORS for Socket.io
 const io = new Server(server, {
   cors: {
-    origin: isProduction ? false : '*', // allow all in dev
+    origin: '*', // allow all to connect for online play / testing
     methods: ['GET', 'POST']
   }
 });
