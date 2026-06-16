@@ -133,70 +133,117 @@ setInterval(() => {
   }
 }, 2000);
 
+// Memory rating cache for local testing / when Firestore database is offline
+const localRatingCache = new Map<string, { rating: number; rd: number; volatility: number }>();
+
 async function updatePlayerGlicko(winnerId: string, loserId: string, isDraw: boolean = false) {
-  if (!db) {
-    console.warn("Firestore db not available. Skipping rating update.");
-    return null;
+  let rA = 1500;
+  let rdA = 350;
+  let volA = 0.06;
+
+  let rB = 1500;
+  let rdB = 350;
+  let volB = 0.06;
+
+  let loadedFromFirestore = false;
+
+  // 1. Try loading latest stats from Firestore
+  if (db) {
+    try {
+      const winnerRef = db.collection('users').doc(winnerId);
+      const loserRef = db.collection('users').doc(loserId);
+      const [winnerSnap, loserSnap] = await Promise.all([winnerRef.get(), loserRef.get()]);
+
+      const winnerData = winnerSnap.exists ? winnerSnap.data() : {};
+      const loserData = loserSnap.exists ? loserSnap.data() : {};
+
+      rA = winnerData?.rating ?? 1500;
+      rdA = winnerData?.rd ?? 350;
+      volA = winnerData?.volatility ?? 0.06;
+
+      rB = loserData?.rating ?? 1500;
+      rdB = loserData?.rd ?? 350;
+      volB = loserData?.volatility ?? 0.06;
+      loadedFromFirestore = true;
+    } catch (err) {
+      console.warn("Failed to load ratings from Firestore. Using local cache fallback:", err);
+    }
   }
 
-  try {
-    const winnerRef = db.collection('users').doc(winnerId);
-    const loserRef = db.collection('users').doc(loserId);
-
-    const [winnerSnap, loserSnap] = await Promise.all([winnerRef.get(), loserRef.get()]);
-
-    const winnerData = winnerSnap.exists ? winnerSnap.data() : {};
-    const loserData = loserSnap.exists ? loserSnap.data() : {};
-
-    const rA = winnerData?.rating ?? 1500;
-    const rdA = winnerData?.rd ?? 350;
-    const volA = winnerData?.volatility ?? 0.06;
-
-    const rB = loserData?.rating ?? 1500;
-    const rdB = loserData?.rd ?? 350;
-    const volB = loserData?.volatility ?? 0.06;
-
-    const scoreA = isDraw ? 0.5 : 1;
-    const scoreB = isDraw ? 0.5 : 0;
-
-    const newA = glicko2(rA, rdA, volA, [[rB, rdB, scoreA]]);
-    const newB = glicko2(rB, rdB, volB, [[rA, rdA, scoreB]]);
-
-    await Promise.all([
-      winnerRef.set({
-        rating: Math.round(newA.rating),
-        rd: Math.round(newA.rd),
-        volatility: newA.vol
-      }, { merge: true }),
-      loserRef.set({
-        rating: Math.round(newB.rating),
-        rd: Math.round(newB.rd),
-        volatility: newB.vol
-      }, { merge: true })
-    ]);
-
-    console.log(`Firestore Glicko-2 Rating Updated:
-      Winner(${winnerId}): ${rA} (±${rdA}) -> ${Math.round(newA.rating)} (±${Math.round(newA.rd)})
-      Loser(${loserId}): ${rB} (±${rdB}) -> ${Math.round(newB.rating)} (±${Math.round(newB.rd)})`);
-
-    return {
-      winner: {
-        oldRating: rA,
-        oldRd: rdA,
-        newRating: Math.round(newA.rating),
-        newRd: Math.round(newA.rd)
-      },
-      loser: {
-        oldRating: rB,
-        oldRd: rdB,
-        newRating: Math.round(newB.rating),
-        newRd: Math.round(newB.rd)
-      }
-    };
-  } catch (err) {
-    console.error("Error updating Glicko-2 ratings in Firestore:", err);
-    return null;
+  // Fallback to local memory cache if Firestore load was skipped or failed
+  if (!loadedFromFirestore) {
+    const cachedA = localRatingCache.get(winnerId);
+    if (cachedA) {
+      rA = cachedA.rating;
+      rdA = cachedA.rd;
+      volA = cachedA.volatility;
+    }
+    const cachedB = localRatingCache.get(loserId);
+    if (cachedB) {
+      rB = cachedB.rating;
+      rdB = cachedB.rd;
+      volB = cachedB.volatility;
+    }
   }
+
+  // 2. Perform Glicko-2 rating updates
+  const scoreA = isDraw ? 0.5 : 1;
+  const scoreB = isDraw ? 0.5 : 0;
+
+  const newA = glicko2(rA, rdA, volA, [[rB, rdB, scoreA]]);
+  const newB = glicko2(rB, rdB, volB, [[rA, rdA, scoreB]]);
+
+  const roundedNewARating = Math.round(newA.rating);
+  const roundedNewARd = Math.round(newA.rd);
+  const roundedNewBRating = Math.round(newB.rating);
+  const roundedNewBRd = Math.round(newB.rd);
+
+  // 3. Try saving new stats to Firestore
+  let savedToFirestore = false;
+  if (db) {
+    try {
+      const winnerRef = db.collection('users').doc(winnerId);
+      const loserRef = db.collection('users').doc(loserId);
+      await Promise.all([
+        winnerRef.set({
+          rating: roundedNewARating,
+          rd: roundedNewARd,
+          volatility: newA.vol
+        }, { merge: true }),
+        loserRef.set({
+          rating: roundedNewBRating,
+          rd: roundedNewBRd,
+          volatility: newB.vol
+        }, { merge: true })
+      ]);
+      savedToFirestore = true;
+    } catch (err) {
+      console.error("Failed to save Glicko-2 ratings to Firestore:", err);
+    }
+  }
+
+  // Always sync local memory cache so it contains the updated values
+  localRatingCache.set(winnerId, { rating: roundedNewARating, rd: roundedNewARd, volatility: newA.vol });
+  localRatingCache.set(loserId, { rating: roundedNewBRating, rd: roundedNewBRd, volatility: newB.vol });
+
+  console.log(`${savedToFirestore ? 'Firestore' : 'Local Memory'} Glicko-2 Rating Updated:
+    Winner(${winnerId}): ${rA} (±${rdA}) -> ${roundedNewARating} (±${roundedNewARd})
+    Loser(${loserId}): ${rB} (±${rdB}) -> ${roundedNewBRating} (±${roundedNewBRd})`);
+
+  return {
+    winner: {
+      oldRating: rA,
+      oldRd: rdA,
+      newRating: roundedNewARating,
+      newRd: roundedNewARd
+    },
+    loser: {
+      oldRating: rB,
+      oldRd: rdB,
+      newRating: roundedNewBRating,
+      newRd: roundedNewBRd
+    }
+  };
 }
 
 function createInitialState() {
