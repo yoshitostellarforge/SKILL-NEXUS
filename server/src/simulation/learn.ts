@@ -33,20 +33,20 @@ const db = admin.apps.length > 0 ? admin.firestore() : null;
 
 // Types
 interface GameMove {
-  boardBefore: string;
-  player: 'A' | 'B';
-  action: {
-    actionType: 'placeStone' | 'useSkill';
+  b: string;
+  p: 'A' | 'B';
+  a: {
+    t: 'p' | 's';
     x?: number;
     y?: number;
-    skillId?: string;
-    customPayload?: any;
+    s?: string;
+    pay?: any;
   };
 }
 
 interface KifuRecord {
-  winner: 'A' | 'B' | 'draw';
-  moves: GameMove[];
+  w: 'A' | 'B' | 'draw';
+  m: GameMove[];
 }
 
 interface Transform {
@@ -155,23 +155,56 @@ const transforms: Transform[] = [
 ];
 
 function serializeBoard(board: any[][]): string {
-  return board.map(row => 
-    row.map(cell => {
-      const char = cell.type === 'circle' ? 'O' : (cell.type === 'cross' ? 'X' : '.');
-      return `${char}${cell.hp}`;
-    }).join(',')
-  ).join('|');
+  let res = '';
+  for (let r = 0; r < board.length; r++) {
+    for (let c = 0; c < board[r].length; c++) {
+      const cell = board[r][c];
+      if (cell.type === 'empty') {
+        res += '.';
+      } else {
+        const char = cell.type === 'circle' ? 'O' : 'X';
+        res += `${char}${cell.hp}`;
+      }
+    }
+  }
+  return res;
 }
 
 function parseSerializedBoard(serialized: string): any[][] {
-  return serialized.split('|').map(row => 
-    row.split(',').map(cell => {
-      const typeChar = cell[0];
-      const hp = parseInt(cell.substring(1), 10);
-      const type = typeChar === 'O' ? 'circle' : (typeChar === 'X' ? 'cross' : 'empty');
-      return { type, hp };
-    })
-  );
+  // Support both old formatted board (with pipes/commas) and new compact board
+  if (serialized.includes('|') || serialized.includes(',')) {
+    return serialized.split('|').map(row => 
+      row.split(',').map(cell => {
+        const typeChar = cell[0];
+        const hp = parseInt(cell.substring(1), 10);
+        const type = typeChar === 'O' ? 'circle' : (typeChar === 'X' ? 'cross' : 'empty');
+        return { type, hp };
+      })
+    );
+  }
+
+  const board: any[][] = Array.from({ length: 5 }, () => []);
+  let idx = 0;
+  for (let r = 0; r < 5; r++) {
+    for (let c = 0; c < 5; c++) {
+      const char = serialized[idx];
+      if (char === '.') {
+        board[r].push({ type: 'empty', hp: 1 });
+        idx++;
+      } else {
+        const type = char === 'O' ? 'circle' : 'cross';
+        idx++;
+        let hpStr = '';
+        while (idx < serialized.length && serialized[idx] >= '0' && serialized[idx] <= '9') {
+          hpStr += serialized[idx];
+          idx++;
+        }
+        const hp = parseInt(hpStr, 10);
+        board[r].push({ type, hp });
+      }
+    }
+  }
+  return board;
 }
 
 // Download human kifu logs from Firestore
@@ -186,11 +219,21 @@ async function fetchFirestoreKifu(): Promise<KifuRecord[]> {
     const records: KifuRecord[] = [];
     snapshot.forEach(doc => {
       const data = doc.data();
-      if (data.winner && data.moves) {
-        records.push({
-          winner: data.winner,
-          moves: data.moves
+      const winner = data.w || data.winner;
+      const movesRaw = data.m || data.moves;
+      if (winner && movesRaw) {
+        const moves: GameMove[] = movesRaw.map((mv: any) => {
+          const b = mv.b || mv.boardBefore;
+          const p = mv.p || mv.player;
+          const rawAct = mv.a || mv.action;
+          const t = rawAct ? (rawAct.t || (rawAct.actionType === 'placeStone' ? 'p' : 's')) : 'p';
+          const x = rawAct ? rawAct.x : undefined;
+          const y = rawAct ? rawAct.y : undefined;
+          const s = rawAct ? (rawAct.s || rawAct.skillId) : undefined;
+          const pay = rawAct ? (rawAct.pay !== undefined ? rawAct.pay : rawAct.customPayload) : undefined;
+          return { b, p, a: { t, x, y, s, pay } };
         });
+        records.push({ w: winner, m: moves });
       }
     });
     console.log(`[Firestore] Successfully downloaded ${records.length} human matches.`);
@@ -273,7 +316,23 @@ async function runLearning() {
   let selfPlayRecords: KifuRecord[] = [];
   try {
     if (fs.existsSync(SELF_PLAY_KIFU_PATH)) {
-      selfPlayRecords = JSON.parse(fs.readFileSync(SELF_PLAY_KIFU_PATH, 'utf-8'));
+      const rawList = JSON.parse(fs.readFileSync(SELF_PLAY_KIFU_PATH, 'utf-8'));
+      selfPlayRecords = rawList.map((record: any) => {
+        const winner = record.w || record.winner;
+        const movesRaw = record.m || record.moves;
+        const moves: GameMove[] = movesRaw.map((mv: any) => {
+          const b = mv.b || mv.boardBefore;
+          const p = mv.p || mv.player;
+          const rawAct = mv.a || mv.action;
+          const t = rawAct ? (rawAct.t || (rawAct.actionType === 'placeStone' ? 'p' : 's')) : 'p';
+          const x = rawAct ? rawAct.x : undefined;
+          const y = rawAct ? rawAct.y : undefined;
+          const s = rawAct ? (rawAct.s || rawAct.skillId) : undefined;
+          const pay = rawAct ? (rawAct.pay !== undefined ? rawAct.pay : rawAct.customPayload) : undefined;
+          return { b, p, a: { t, x, y, s, pay } };
+        });
+        return { w: winner, m: moves };
+      });
       console.log(`[Self-Play] Loaded ${selfPlayRecords.length} matches from local self_play_kifu.json`);
     } else {
       console.log("[Self-Play] No self_play_kifu.json found. Proceeding with human data only.");
@@ -285,15 +344,15 @@ async function runLearning() {
   // 2. Process all records
   // We apply weight 3.0 to human play, 1.0 to self-play
   const processMatch = (record: KifuRecord, weight: number) => {
-    const winner = record.winner;
+    const winner = record.w;
     
-    for (const move of record.moves) {
-      if (!move.boardBefore || !move.action) continue;
+    for (const move of record.m) {
+      if (!move.b || !move.a) continue;
 
-      const board = parseSerializedBoard(move.boardBefore);
+      const board = parseSerializedBoard(move.b);
 
       // A. Evaluate 8 symmetries to find canonical dictionary-smallest representation
-      let minSerialized = move.boardBefore;
+      let minSerialized = move.b;
       let bestTransformIdx = 0;
 
       for (let tIdx = 0; tIdx < transforms.length; tIdx++) {
@@ -307,11 +366,11 @@ async function runLearning() {
 
       // B. Transform the action using the same symmetry index
       const bestTransform = transforms[bestTransformIdx];
-      const originalAction = move.action;
+      const originalAction = move.a;
       const transformedAction: ActionObj = {
-        actionType: originalAction.actionType,
-        skillId: originalAction.skillId,
-        customPayload: originalAction.customPayload
+        actionType: originalAction.t === 'p' ? 'placeStone' : 'useSkill',
+        skillId: originalAction.s,
+        customPayload: originalAction.pay
       };
 
       if (originalAction.x !== undefined && originalAction.y !== undefined) {
@@ -326,7 +385,7 @@ async function runLearning() {
       let outcome: 'win' | 'loss' | 'draw' = 'loss';
       if (winner === 'draw') {
         outcome = 'draw';
-      } else if (winner === move.player) {
+      } else if (winner === move.p) {
         outcome = 'win';
       }
 

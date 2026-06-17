@@ -201,6 +201,58 @@ const symmetries: Symmetry[] = [
   }
 ];
 
+function getCandidateMoves(board: Board): { x: number; y: number }[] {
+  const size = board.length;
+  const candidates: { x: number; y: number }[] = [];
+  let hasStones = false;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (board[y][x].type !== 'empty') {
+        hasStones = true;
+        break;
+      }
+    }
+    if (hasStones) break;
+  }
+
+  // If board is empty, evaluate all cells (usually just the center or few cells, but all is safe)
+  if (!hasStones) {
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        candidates.push({ x, y });
+      }
+    }
+    return candidates;
+  }
+
+  // Otherwise, only evaluate empty cells adjacent (within 1 step) to any existing stones
+  const visited = new Set<string>();
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      if (board[y][x].type !== 'empty') {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const ny = y + dy;
+            const nx = x + dx;
+            if (ny >= 0 && ny < size && nx >= 0 && nx < size) {
+              if (board[ny][nx].type === 'empty') {
+                const key = `${nx},${ny}`;
+                if (!visited.has(key)) {
+                  visited.add(key);
+                  candidates.push({ x: nx, y: ny });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return candidates;
+}
+
 function evaluateStonePlacementWithLookahead(
   state: GameState,
   x: number,
@@ -226,18 +278,15 @@ function evaluateStonePlacementWithLookahead(
   let opponentBestState = testState;
   let hasOpponentMoves = false;
 
-  const size = testState.board.length;
-  for (let oy = 0; oy < size; oy++) {
-    for (let ox = 0; ox < size; ox++) {
-      if (testState.board[oy][ox].type === 'empty') {
-        hasOpponentMoves = true;
-        const oppState = placeStone(testState, ox, oy);
-        const oppScore = evaluateBoardScore(oppState.board, opponent, gene);
-        if (oppScore > opponentBestScore) {
-          opponentBestScore = oppScore;
-          opponentBestState = oppState;
-        }
-      }
+  // Filter opponent response candidates to adjacent empty cells
+  const oppCandidates = getCandidateMoves(testState.board);
+  for (const coord of oppCandidates) {
+    hasOpponentMoves = true;
+    const oppState = placeStone(testState, coord.x, coord.y);
+    const oppScore = evaluateBoardScore(oppState.board, opponent, gene);
+    if (oppScore > opponentBestScore) {
+      opponentBestScore = oppScore;
+      opponentBestState = oppState;
     }
   }
 
@@ -305,20 +354,18 @@ export function decideBestAction(
   };
 
   // 1. Evaluate normal stone placement options
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      if (state.board[y][x].type === 'empty') {
-        const score = evaluateStonePlacementWithLookahead(state, x, y, role, gene);
-        
-        if (score > bestAction.score) {
-          bestAction = {
-            actionType: 'placeStone',
-            x,
-            y,
-            score
-          };
-        }
-      }
+  const candidates = getCandidateMoves(state.board);
+  for (const coord of candidates) {
+    const { x, y } = coord;
+    const score = evaluateStonePlacementWithLookahead(state, x, y, role, gene);
+    
+    if (score > bestAction.score) {
+      bestAction = {
+        actionType: 'placeStone',
+        x,
+        y,
+        score
+      };
     }
   }
 

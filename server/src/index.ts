@@ -33,14 +33,14 @@ if (serviceAccountEnv) {
 const db = admin.apps.length > 0 ? admin.firestore() : null;
 
 interface GameMove {
-  boardBefore: string;
-  player: 'A' | 'B';
-  action: {
-    actionType: 'placeStone' | 'useSkill';
+  b: string;
+  p: 'A' | 'B';
+  a: {
+    t: 'p' | 's';
     x?: number;
     y?: number;
-    skillId?: string;
-    customPayload?: any;
+    s?: string;
+    pay?: any;
   };
 }
 
@@ -641,16 +641,18 @@ io.on('connection', (socket) => {
       if (room) {
         const player = room.players.find(p => p.socketId === socket.id);
         if (player && payload.boardBefore) {
+          const compactAction: any = {
+            t: payload.actionType === 'placeStone' ? 'p' : 's'
+          };
+          if (payload.x !== undefined) compactAction.x = payload.x;
+          if (payload.y !== undefined) compactAction.y = payload.y;
+          if (payload.skillId !== undefined) compactAction.s = payload.skillId;
+          if (payload.customPayload !== undefined) compactAction.pay = payload.customPayload;
+
           room.moves.push({
-            boardBefore: payload.boardBefore,
-            player: player.role,
-            action: {
-              actionType: payload.actionType,
-              x: payload.x,
-              y: payload.y,
-              skillId: payload.skillId,
-              customPayload: payload.customPayload
-            }
+            b: payload.boardBefore,
+            p: player.role,
+            a: compactAction
           });
         }
         socket.to(roomCode).emit('game:action:received', payload);

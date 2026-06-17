@@ -7,14 +7,14 @@ export interface Cell {
 export type Board = Cell[][];
 
 export interface GameMove {
-  boardBefore: string;
-  player: 'A' | 'B';
-  action: {
-    actionType: 'placeStone' | 'useSkill';
+  b: string; // boardBefore
+  p: 'A' | 'B'; // player
+  a: { // action
+    t: 'p' | 's'; // actionType ('p' = 'placeStone', 's' = 'useSkill')
     x?: number;
     y?: number;
-    skillId?: string;
-    customPayload?: any;
+    s?: string; // skillId
+    pay?: any; // customPayload
   };
 }
 

@@ -467,10 +467,18 @@
   }
 
   function recordMove(action: any) {
+    const compactAction: any = {
+      t: action.actionType === 'placeStone' ? 'p' : 's'
+    };
+    if (action.x !== undefined) compactAction.x = action.x;
+    if (action.y !== undefined) compactAction.y = action.y;
+    if (action.skillId !== undefined) compactAction.s = action.skillId;
+    if (action.customPayload !== undefined) compactAction.pay = action.customPayload;
+
     state.moves.push({
-      boardBefore: serializeBoard(state.board),
-      player: state.currentPlayer,
-      action
+      b: serializeBoard(state.board),
+      p: state.currentPlayer,
+      a: compactAction
     });
   }
 
